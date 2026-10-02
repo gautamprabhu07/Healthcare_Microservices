@@ -1,6 +1,5 @@
-package com.pm.patientservice.exception;
+package com.pm.analyticsservice.exception;
 
-import io.grpc.StatusRuntimeException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -49,28 +48,6 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         : HttpStatus.valueOf(statusCode.value()).getReasonPhrase();
 
     return build(statusCode, message, request, null);
-  }
-
-  @ExceptionHandler(EmailAlreadyExistsException.class)
-  public ResponseEntity<Object> handleEmailAlreadyExists(
-      EmailAlreadyExistsException ex, WebRequest request) {
-    log.warn("Email already exists: {}", ex.getMessage());
-    return build(HttpStatus.CONFLICT, ex.getMessage(), request, null);
-  }
-
-  @ExceptionHandler(PatientNotFoundException.class)
-  public ResponseEntity<Object> handlePatientNotFound(
-      PatientNotFoundException ex, WebRequest request) {
-    log.warn("Patient not found: {}", ex.getMessage());
-    return build(HttpStatus.NOT_FOUND, ex.getMessage(), request, null);
-  }
-
-  @ExceptionHandler(StatusRuntimeException.class)
-  public ResponseEntity<Object> handleGrpcException(StatusRuntimeException ex,
-      WebRequest request) {
-    log.error("Billing service call failed: {}", ex.getStatus());
-    return build(HttpStatus.SERVICE_UNAVAILABLE,
-        "Billing service unavailable, patient not created", request, null);
   }
 
   @ExceptionHandler(Exception.class)

@@ -4,6 +4,7 @@ services:
   auth-service-db:
     image: postgres:17
     container_name: auth-service-db
+    restart: unless-stopped
     environment:
       POSTGRES_USER: admin_user
       POSTGRES_PASSWORD: password
@@ -12,10 +13,16 @@ services:
       - "5001:5432"
     volumes:
       - auth_service_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin_user -d db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   patient-service-db:
     image: postgres:17
     container_name: patient-service-db
+    restart: unless-stopped
     environment:
       POSTGRES_USER: admin_user
       POSTGRES_PASSWORD: password
@@ -24,11 +31,17 @@ services:
       - "5000:5432"
     volumes:
       - patient_service_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin_user -d db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   # ---------- Kafka (single-node, KRaft mode, no Zookeeper needed) ----------
   kafka:
     image: apache/kafka:3.7.0
     container_name: kafka
+    restart: unless-stopped
     ports:
       - "9092:9092"
     environment:
@@ -40,11 +53,18 @@ services:
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 15s
+      retries: 10
+      start_period: 20s
 
   # ---------- Application services ----------
   auth-service:
     build: ./auth-service
     container_name: auth-service
+    restart: unless-stopped
     ports:
       - "4005:4005"
     environment:
@@ -55,28 +75,51 @@ services:
       SPRING_JPA_HIBERNATE_DDL_AUTO: update
       SPRING_SQL_INIT_MODE: always
     depends_on:
-      - auth-service-db
+      auth-service-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:4005/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
 
   billing-service:
     build: ./billing-service
     container_name: billing-service
+    restart: unless-stopped
     ports:
       - "4001:4001"
       - "9001:9001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:4001/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
 
   analytics-service:
     build: ./analytics-service
     container_name: analytics-service
+    restart: unless-stopped
     ports:
       - "4002:4002"
     environment:
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:4002/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
 
   patient-service:
     build: ./patient-service
     container_name: patient-service
+    restart: unless-stopped
     ports:
       - "4000:4000"
     environment:
@@ -89,20 +132,38 @@ services:
       BILLING_SERVICE_ADDRESS: billing-service
       BILLING_SERVICE_GRPC_PORT: 9001
     depends_on:
-      - patient-service-db
-      - billing-service
-      - kafka
+      patient-service-db:
+        condition: service_healthy
+      billing-service:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:4000/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
 
   api-gateway:
     build: ./api-gateway
     container_name: api-gateway
+    restart: unless-stopped
     ports:
       - "4004:4004"
     environment:
       AUTH_SERVICE_URL: http://auth-service:4005
     depends_on:
-      - auth-service
-      - patient-service
+      auth-service:
+        condition: service_healthy
+      patient-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:4004/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
 
 volumes:
   auth_service_db_data:

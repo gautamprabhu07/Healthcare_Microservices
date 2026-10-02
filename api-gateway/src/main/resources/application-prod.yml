@@ -35,3 +35,14 @@ spring:
             - Path=/api-docs/auth
           filters:
             - RewritePath=/api-docs/auth,/v3/api-docs
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
