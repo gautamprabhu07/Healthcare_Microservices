@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package appointment.events;
+option java_multiple_files = true;
+
+// Topic: appointment (key = appointmentId)
+// event_type: APPOINTMENT_BOOKED | APPOINTMENT_RESCHEDULED |
+//             APPOINTMENT_COMPLETED | APPOINTMENT_CANCELLED | APPOINTMENT_NO_SHOW
+message AppointmentEvent {
+  string event_id = 1;      // UUID, unique per event (idempotency key)
+  string event_type = 2;
+  string occurred_at = 3;   // ISO-8601 instant
+  string appointment_id = 4;
+  string patient_id = 5;
+  string patient_name = 6;
+  string patient_email = 7;
+  string doctor_id = 8;
+  string doctor_name = 9;
+  string start_time = 10;   // ISO-8601 instant
+  string end_time = 11;     // ISO-8601 instant
+  string reason = 12;
+  string status = 13;
+  string cancel_reason = 14;
+}

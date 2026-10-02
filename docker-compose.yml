@@ -62,7 +62,9 @@ services:
 
   # ---------- Application services ----------
   auth-service:
-    build: ./auth-service
+    build:
+      context: .
+      dockerfile: auth-service/Dockerfile
     container_name: auth-service
     restart: unless-stopped
     ports:
@@ -85,7 +87,9 @@ services:
       start_period: 40s
 
   billing-service:
-    build: ./billing-service
+    build:
+      context: .
+      dockerfile: billing-service/Dockerfile
     container_name: billing-service
     restart: unless-stopped
     ports:
@@ -99,7 +103,9 @@ services:
       start_period: 30s
 
   analytics-service:
-    build: ./analytics-service
+    build:
+      context: .
+      dockerfile: analytics-service/Dockerfile
     container_name: analytics-service
     restart: unless-stopped
     ports:
@@ -117,7 +123,9 @@ services:
       start_period: 30s
 
   patient-service:
-    build: ./patient-service
+    build:
+      context: .
+      dockerfile: patient-service/Dockerfile
     container_name: patient-service
     restart: unless-stopped
     ports:
@@ -146,7 +154,9 @@ services:
       start_period: 40s
 
   api-gateway:
-    build: ./api-gateway
+    build:
+      context: .
+      dockerfile: api-gateway/Dockerfile
     container_name: api-gateway
     restart: unless-stopped
     ports:

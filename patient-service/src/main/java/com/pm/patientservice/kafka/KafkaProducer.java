@@ -1,5 +1,7 @@
 package com.pm.patientservice.kafka;
 import com.pm.patientservice.model.Patient;
+import java.time.Instant;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -23,6 +25,8 @@ public class KafkaProducer {
         .setName(patient.getName())
         .setEmail(patient.getEmail())
         .setEventType("PATIENT_CREATED")
+        .setEventId(UUID.randomUUID().toString())
+        .setOccurredAt(Instant.now().toString())
         .build();
 
     try {

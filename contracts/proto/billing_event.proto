@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package billing.events;
+option java_multiple_files = true;
+
+// Topic: billing (key = invoiceId)
+// event_type: INVOICE_CREATED | INVOICE_PAID | INVOICE_CANCELLED
+message BillingEvent {
+  string event_id = 1;      // UUID, unique per event (idempotency key)
+  string event_type = 2;
+  string occurred_at = 3;   // ISO-8601 instant
+  string invoice_id = 4;
+  string invoice_number = 5;
+  string account_id = 6;
+  string patient_id = 7;
+  string patient_name = 8;
+  string patient_email = 9;
+  string appointment_id = 10;  // empty when not tied to an appointment
+  string description = 11;
+  string amount = 12;          // decimal as string, e.g. "50.00"
+  string currency = 13;
+  string status = 14;          // PENDING | PAID | CANCELLED
+  string due_date = 15;        // ISO-8601 date
+}

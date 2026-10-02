@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package patient.grpc;
+
+option java_multiple_files = true;
+option java_package = "patient.grpc";
+option java_outer_classname = "PatientServiceOuterClass";
+
+// Implemented by patient-service; used by appointment-service to check that
+// a patient exists before booking.
+service PatientService {
+  rpc GetPatient (GetPatientRequest) returns (GetPatientResponse);
+}
+
+message GetPatientRequest {
+  string patientId = 1;
+}
+
+message GetPatientResponse {
+  bool exists = 1;
+  string patientId = 2;
+  string name = 3;
+  string email = 4;
+}

@@ -1,0 +1,12 @@
+.git
+.idea
+.vscode
+.env
+**/target
+**/.mvn
+infrastructure
+integration-tests
+api-requests
+grpc-requests
+*.txt
+*.md

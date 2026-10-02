@@ -1,12 +1,15 @@
 FROM maven:3.9.9-eclipse-temurin-21 AS builder
 
-WORKDIR /app
+# Build context is the repository root (see docker-compose.yml).
+WORKDIR /app/billing-service
 
-COPY pom.xml .
+COPY billing-service/pom.xml .
 
 RUN mvn dependency:go-offline -B
 
-COPY src ./src
+COPY contracts /app/contracts
+
+COPY billing-service/src ./src
 
 RUN mvn clean package
 
@@ -14,7 +17,7 @@ FROM eclipse-temurin:21-jdk AS runner
 
 WORKDIR /app
 
-COPY --from=builder ./app/target/billing-service-0.0.1-SNAPSHOT.jar ./app.jar
+COPY --from=builder /app/billing-service/target/billing-service-0.0.1-SNAPSHOT.jar ./app.jar
 
 EXPOSE 4001
 EXPOSE 9001

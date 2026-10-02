@@ -28,6 +28,10 @@ public class BillingServiceGrpcClient {
     ManagedChannel channel = ManagedChannelBuilder.forAddress(serverAddress,
         serverPort).usePlaintext().build();
 
+    // Connect eagerly so the first request doesn't pay the connection cost
+    // and trip the call deadline.
+    channel.getState(true);
+
     blockingStub = BillingServiceGrpc.newBlockingStub(channel);
   }
 

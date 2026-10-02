@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package patient.events;
+option java_multiple_files = true;
+
+// Topic: patient (key = patientId)
+// event_type: PATIENT_CREATED | PATIENT_UPDATED | PATIENT_DELETED
+message PatientEvent {
+  string patientId = 1;
+  string name = 2;
+  string email = 3;
+  string event_type = 4;
+  string event_id = 5;      // UUID, unique per event (idempotency key)
+  string occurred_at = 6;   // ISO-8601 instant
+}
