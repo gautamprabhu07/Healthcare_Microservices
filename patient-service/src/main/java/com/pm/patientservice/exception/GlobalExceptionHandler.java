@@ -65,6 +65,18 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     return build(HttpStatus.NOT_FOUND, ex.getMessage(), request, null);
   }
 
+  @ExceptionHandler(UnauthorizedException.class)
+  public ResponseEntity<Object> handleUnauthorized(UnauthorizedException ex,
+      WebRequest request) {
+    return build(HttpStatus.UNAUTHORIZED, ex.getMessage(), request, null);
+  }
+
+  @ExceptionHandler(ForbiddenException.class)
+  public ResponseEntity<Object> handleForbidden(ForbiddenException ex,
+      WebRequest request) {
+    return build(HttpStatus.FORBIDDEN, ex.getMessage(), request, null);
+  }
+
   @ExceptionHandler(StatusRuntimeException.class)
   public ResponseEntity<Object> handleGrpcException(StatusRuntimeException ex,
       WebRequest request) {

@@ -3,6 +3,8 @@ package com.pm.patientservice.controller;
 import com.pm.patientservice.dto.PatientRequestDTO;
 import com.pm.patientservice.dto.PatientResponseDTO;
 import com.pm.patientservice.dto.validators.CreatePatientValidationGroup;
+import com.pm.patientservice.security.RequiredRole;
+import com.pm.patientservice.security.Role;
 import com.pm.patientservice.service.PatientService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -31,6 +33,7 @@ public class PatientController {
     this.patientService = patientService;
   }
 
+  @RequiredRole({Role.ADMIN, Role.RECEPTIONIST, Role.DOCTOR})
   @GetMapping
   @Operation(summary = "Get Patients")
   public ResponseEntity<List<PatientResponseDTO>> getPatients() {
@@ -38,6 +41,7 @@ public class PatientController {
     return ResponseEntity.ok().body(patients);
   }
 
+  @RequiredRole({Role.ADMIN, Role.RECEPTIONIST})
   @PostMapping
   @Operation(summary = "Create a new Patient")
   public ResponseEntity<PatientResponseDTO> createPatient(
@@ -50,6 +54,7 @@ public class PatientController {
     return ResponseEntity.ok().body(patientResponseDTO);
   }
 
+  @RequiredRole({Role.ADMIN, Role.RECEPTIONIST})
   @PutMapping("/{id}")
   @Operation(summary = "Update a new Patient")
   public ResponseEntity<PatientResponseDTO> updatePatient(@PathVariable UUID id,
@@ -61,6 +66,7 @@ public class PatientController {
     return ResponseEntity.ok().body(patientResponseDTO);
   }
 
+  @RequiredRole(Role.ADMIN)
   @DeleteMapping("/{id}")
   @Operation(summary = "Delete a Patient")
   public ResponseEntity<Void> deletePatient(@PathVariable UUID id) {

@@ -17,10 +17,13 @@ public class BillingServiceGrpcClient {
   private static final Logger log = LoggerFactory.getLogger(
       BillingServiceGrpcClient.class);
   private final BillingServiceGrpc.BillingServiceBlockingStub blockingStub;
+  private final long deadlineSeconds;
 
   public BillingServiceGrpcClient(
       @Value("${billing.service.address:localhost}") String serverAddress,
-      @Value("${billing.service.grpc.port:9001}") int serverPort) {
+      @Value("${billing.service.grpc.port:9001}") int serverPort,
+      @Value("${billing.service.deadline-seconds:10}") long deadlineSeconds) {
+    this.deadlineSeconds = deadlineSeconds;
 
     log.info("Connecting to Billing Service GRPC service at {}:{}",
         serverAddress, serverPort);
@@ -41,7 +44,7 @@ public class BillingServiceGrpcClient {
     BillingRequest request = BillingRequest.newBuilder().setPatientId(patientId)
         .setName(name).setEmail(email).build();
 
-    BillingResponse response = blockingStub.withDeadlineAfter(3, TimeUnit.SECONDS)
+    BillingResponse response = blockingStub.withDeadlineAfter(deadlineSeconds, TimeUnit.SECONDS)
         .createBillingAccount(request);
     log.info("Received response from billing service via GRPC: {}", response);
     return response;

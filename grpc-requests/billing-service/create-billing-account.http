@@ -1,3 +1,6 @@
+### billing-service's gRPC port is no longer published to the host.
+### To call it from here, temporarily add `- "9001:9001"` under billing-service
+### `ports:` in docker-compose.yml and run `docker compose up -d billing-service`.
 GRPC localhost:9001/BillingService/CreateBillingAccount
 
 {
