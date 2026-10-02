@@ -1,13 +1,7 @@
 package com.pm.authservice.dto;
 
-public class LoginResponseDTO {
-  private final String token;
+import java.time.Instant;
 
-  public LoginResponseDTO(String token) {
-    this.token = token;
-  }
-
-  public String getToken() {
-    return token;
-  }
+public record LoginResponseDTO(String token, Instant expiresAt,
+                               UserResponse user) {
 }

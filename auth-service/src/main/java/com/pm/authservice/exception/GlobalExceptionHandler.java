@@ -56,6 +56,38 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     return build(HttpStatus.UNAUTHORIZED, ex.getMessage(), request, null);
   }
 
+  @ExceptionHandler(ForbiddenException.class)
+  public ResponseEntity<Object> handleForbidden(ForbiddenException ex,
+      WebRequest request) {
+    return build(HttpStatus.FORBIDDEN, ex.getMessage(), request, null);
+  }
+
+  @ExceptionHandler(UserNotFoundException.class)
+  public ResponseEntity<Object> handleUserNotFound(UserNotFoundException ex,
+      WebRequest request) {
+    return build(HttpStatus.NOT_FOUND, ex.getMessage(), request, null);
+  }
+
+  @ExceptionHandler(EmailAlreadyExistsException.class)
+  public ResponseEntity<Object> handleEmailAlreadyExists(
+      EmailAlreadyExistsException ex, WebRequest request) {
+    return build(HttpStatus.CONFLICT, ex.getMessage(), request, null);
+  }
+
+  @ExceptionHandler(BusinessRuleException.class)
+  public ResponseEntity<Object> handleBusinessRule(BusinessRuleException ex,
+      WebRequest request) {
+    return build(HttpStatus.UNPROCESSABLE_ENTITY, ex.getMessage(), request,
+        null);
+  }
+
+  @ExceptionHandler(ApiValidationException.class)
+  public ResponseEntity<Object> handleApiValidation(ApiValidationException ex,
+      WebRequest request) {
+    return build(HttpStatus.BAD_REQUEST, "Validation failed", request,
+        ex.getFieldErrors());
+  }
+
   @ExceptionHandler(Exception.class)
   public ResponseEntity<Object> handleUnexpected(Exception ex,
       WebRequest request) {

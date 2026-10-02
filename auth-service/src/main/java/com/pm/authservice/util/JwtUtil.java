@@ -1,11 +1,12 @@
 package com.pm.authservice.util;
 
+import com.pm.authservice.model.User;
+import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
-import io.jsonwebtoken.security.SignatureException;
 import java.nio.charset.StandardCharsets;
-import java.security.Key;
+import java.time.Instant;
 import java.util.Base64;
 import java.util.Date;
 import javax.crypto.SecretKey;
@@ -15,33 +16,38 @@ import org.springframework.stereotype.Component;
 @Component
 public class JwtUtil {
 
-  private final Key secretKey;
+  private final SecretKey secretKey;
+  private final long expirationMs;
 
-  public JwtUtil(@Value("${jwt.secret}") String secret) {
+  public JwtUtil(@Value("${jwt.secret}") String secret,
+      @Value("${jwt.expiration-ms:28800000}") long expirationMs) {
     byte[] keyBytes = Base64.getDecoder()
         .decode(secret.getBytes(StandardCharsets.UTF_8));
     this.secretKey = Keys.hmacShaKeyFor(keyBytes);
+    this.expirationMs = expirationMs;
   }
 
-  public String generateToken(String email, String role) {
-    return Jwts.builder()
-        .subject(email)
-        .claim("role", role)
-        .issuedAt(new Date())
-        .expiration(new Date(System.currentTimeMillis() + 1000 * 60 * 60 *10)) // 10 hours
+  public IssuedToken generateToken(User user) {
+    Instant issuedAt = Instant.now();
+    Instant expiresAt = issuedAt.plusMillis(expirationMs);
+
+    String token = Jwts.builder()
+        .subject(user.getEmail())
+        .claim("userId", user.getId().toString())
+        .claim("email", user.getEmail())
+        .claim("role", user.getRole())
+        .claim("name", user.getFirstName() + " " + user.getLastName())
+        .issuedAt(Date.from(issuedAt))
+        .expiration(Date.from(expiresAt))
         .signWith(secretKey)
         .compact();
+
+    return new IssuedToken(token, expiresAt);
   }
 
-  public void validateToken(String token) {
-    try {
-      Jwts.parser().verifyWith((SecretKey) secretKey)
-          .build()
-          .parseSignedClaims(token);
-    } catch (SignatureException e) {
-      throw new JwtException("Invalid JWT signature");
-    } catch (JwtException e) {
-      throw new JwtException("Invalid JWT");
-    }
+  /** Verifies signature and expiry; throws {@link JwtException} when invalid. */
+  public Claims parseClaims(String token) {
+    return Jwts.parser().verifyWith(secretKey).build()
+        .parseSignedClaims(token).getPayload();
   }
 }
