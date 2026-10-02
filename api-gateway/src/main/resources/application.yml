@@ -59,6 +59,15 @@ spring:
             - StripPrefix=1
             - JwtValidation
 
+        # /api/billing/** -> billing-service /billing/**
+        - id: billing-service-route
+          uri: ${billing.service.url:http://billing-service:4001}
+          predicates:
+            - Path=/api/billing/**
+          filters:
+            - StripPrefix=1
+            - JwtValidation
+
         # OpenAPI docs per service (consolidated in a later step)
         - id: api-docs-patient-route
           uri: ${patient.service.url:http://patient-service:4000}

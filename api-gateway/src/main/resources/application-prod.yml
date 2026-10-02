@@ -3,3 +3,6 @@
 patient:
   service:
     url: http://host.docker.internal:4000
+billing:
+  service:
+    url: http://host.docker.internal:4001

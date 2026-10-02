@@ -8,7 +8,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
+import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -42,12 +44,56 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
       Object body, HttpHeaders headers, HttpStatusCode statusCode,
       WebRequest request) {
 
-    String message = ex instanceof ErrorResponse errorResponse
-        && errorResponse.getBody().getDetail() != null
-        ? errorResponse.getBody().getDetail()
-        : HttpStatus.valueOf(statusCode.value()).getReasonPhrase();
+    String message;
+    if (body instanceof ProblemDetail problem && problem.getDetail() != null) {
+      message = problem.getDetail();
+    } else if (ex instanceof ErrorResponse errorResponse
+        && errorResponse.getBody().getDetail() != null) {
+      message = errorResponse.getBody().getDetail();
+    } else {
+      message = HttpStatus.valueOf(statusCode.value()).getReasonPhrase();
+    }
 
     return build(statusCode, message, request, null);
+  }
+
+  @ExceptionHandler(UnauthorizedException.class)
+  public ResponseEntity<Object> handleUnauthorized(UnauthorizedException ex,
+      WebRequest request) {
+    return build(HttpStatus.UNAUTHORIZED, ex.getMessage(), request, null);
+  }
+
+  @ExceptionHandler(ForbiddenException.class)
+  public ResponseEntity<Object> handleForbidden(ForbiddenException ex,
+      WebRequest request) {
+    return build(HttpStatus.FORBIDDEN, ex.getMessage(), request, null);
+  }
+
+  @ExceptionHandler(ResourceNotFoundException.class)
+  public ResponseEntity<Object> handleNotFound(ResourceNotFoundException ex,
+      WebRequest request) {
+    return build(HttpStatus.NOT_FOUND, ex.getMessage(), request, null);
+  }
+
+  @ExceptionHandler(InvalidStateException.class)
+  public ResponseEntity<Object> handleInvalidState(InvalidStateException ex,
+      WebRequest request) {
+    return build(HttpStatus.UNPROCESSABLE_ENTITY, ex.getMessage(), request, null);
+  }
+
+  @ExceptionHandler(InvalidRequestException.class)
+  public ResponseEntity<Object> handleInvalidRequest(InvalidRequestException ex,
+      WebRequest request) {
+    return build(HttpStatus.BAD_REQUEST, "Validation failed", request,
+        ex.getFieldErrors());
+  }
+
+  @ExceptionHandler(ObjectOptimisticLockingFailureException.class)
+  public ResponseEntity<Object> handleConcurrentUpdate(
+      ObjectOptimisticLockingFailureException ex, WebRequest request) {
+    return build(HttpStatus.CONFLICT,
+        "The record was changed by someone else. Reload it and try again",
+        request, null);
   }
 
   @ExceptionHandler(Exception.class)
