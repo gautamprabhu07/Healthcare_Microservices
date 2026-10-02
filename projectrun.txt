@@ -1,0 +1,287 @@
+====================================================================
+ HOW TO RUN THIS PROJECT — STEP BY STEP GUIDE
+====================================================================
+
+This project is a multi-service Java/Spring Boot application made up of
+5 independent services (api-gateway, auth-service, patient-service,
+billing-service, analytics-service), 2 PostgreSQL databases, and a
+Kafka broker. The easiest and most reliable way to run everything
+together is with Docker Compose. This guide walks through that path
+end-to-end, plus notes on running a single service standalone if you
+just want to poke at one piece of it.
+
+--------------------------------------------------------------------
+1. PREREQUISITES (install these first)
+--------------------------------------------------------------------
+
+  - Docker Desktop
+      Download: https://www.docker.com/products/docker-desktop/
+      IMPORTANT: Docker Desktop must be OPEN AND RUNNING before you
+      run any docker/docker-compose command below. On Windows/Mac,
+      just launch the Docker Desktop app and wait until the whale
+      icon in the system tray shows "Docker Desktop is running".
+      If Docker Desktop is not running, every command below will
+      fail with an error like "cannot connect to the Docker daemon".
+
+  - Java 21 (JDK)
+      Only required if you want to run a service outside Docker
+      (Section 5 below). Not required for the main Docker Compose
+      flow, since each service builds itself inside its own
+      container using the Maven wrapper.
+
+  - Git Bash / PowerShell / Terminal
+      To run the commands in this guide.
+
+No separate Maven install is needed — every service ships its own
+Maven wrapper (mvnw / mvnw.cmd), and Docker builds handle Maven
+internally.
+
+--------------------------------------------------------------------
+2. FILES YOU NEED TO CREATE YOURSELF
+--------------------------------------------------------------------
+
+Two files are intentionally NOT committed to git (see .gitignore —
+docker-compose.yml and .env are excluded so secrets/local config
+don't leak into source control).
+
+  (a) docker-compose.yml
+      -----------------
+      A ready-to-use docker-compose.yml has already been generated
+      for you at the project root:
+
+          docker-compose.yml
+
+      If it's ever missing (e.g. fresh clone), ask for it to be
+      regenerated, or recreate it — it defines:
+        - auth-service-db & patient-service-db (Postgres containers)
+        - kafka (single-node KRaft broker, no Zookeeper needed)
+        - the 5 application services, wired together by container
+          name (e.g. patient-service talks to "kafka:9092" and
+          "billing-service:9001" using Docker's internal DNS)
+
+  (b) .env  (create this yourself in the project root, next to
+      docker-compose.yml)
+      -----------------
+      This holds the one secret the stack needs: the JWT signing
+      key used by auth-service to issue/validate tokens.
+
+      Create a file named exactly ".env" in the project root with
+      this content:
+
+          JWT_SECRET=Y2hhVEc3aHJnb0hYTzMyZ2ZqVkpiZ1RkZG93YWxrUkM=
+
+      (This is a base64-encoded secret. You can generate your own
+      random one if you prefer — any base64 string of reasonable
+      length works. It just needs to exist and match on the
+      auth-service side, which docker-compose.yml already wires up
+      via ${JWT_SECRET}.)
+
+      Docker Compose automatically reads a file named ".env" in the
+      same folder as docker-compose.yml, so no extra flags are
+      needed — just make sure it's there before running "docker
+      compose up".
+
+--------------------------------------------------------------------
+3. RUNNING THE FULL STACK WITH DOCKER COMPOSE
+--------------------------------------------------------------------
+
+  Step 1 — Open Docker Desktop and wait for it to fully start.
+
+  Step 2 — Open a terminal in the project root (the folder
+           containing docker-compose.yml) and run:
+
+               docker compose up --build
+
+           - "--build" is only needed the first time, or after you
+             change source code — it rebuilds the service images.
+             On later runs you can just use "docker compose up".
+           - This will take a few minutes the first time (Maven
+             downloads dependencies and builds each service's jar
+             inside its container).
+
+  Step 3 — Watch the logs. You'll see output interleaved from all
+           containers. Wait until you see lines like:
+
+               patient-service   | ... Started PatientServiceApplication ...
+               auth-service      | ... Started AuthServiceApplication ...
+               api-gateway       | ... Started ApiGatewayApplication ...
+
+           Startup order matters a little — Postgres and Kafka need
+           to be ready before the app services fully connect. If a
+           service logs connection errors early on and then
+           recovers/retries a few seconds later, that's normal.
+
+  Step 4 — Once everything is up, the services are reachable at:
+
+               API Gateway        -> http://localhost:4004
+               Auth Service       -> http://localhost:4005
+               Patient Service    -> http://localhost:4000
+               Billing Service    -> http://localhost:4001 (REST) /
+                                      localhost:9001 (gRPC)
+               Analytics Service  -> http://localhost:4002
+               Patient DB (psql)  -> localhost:5000
+               Auth DB (psql)     -> localhost:5001
+               Kafka broker       -> localhost:9092
+
+  To stop everything:
+               docker compose down
+
+  To stop everything AND wipe the database volumes (fresh start):
+               docker compose down -v
+
+--------------------------------------------------------------------
+4. VIEWING / TESTING IT IN THE BROWSER
+--------------------------------------------------------------------
+
+The REST endpoints return JSON, not HTML pages, so "viewing in the
+browser" mainly means using the auto-generated Swagger UI (API docs
++ a built-in tool to send test requests), rather than typing API
+URLs directly into the address bar.
+
+  Patient Service Swagger UI (direct, no auth required):
+      http://localhost:4000/swagger-ui/index.html
+
+  Auth Service Swagger UI (direct, no auth required):
+      http://localhost:4005/swagger-ui/index.html
+
+  Through the gateway (this is the "real" path a client would use):
+      http://localhost:4004/api-docs/patients   (raw OpenAPI JSON)
+      http://localhost:4004/api-docs/auth       (raw OpenAPI JSON)
+
+STEP-BY-STEP: Getting a JWT and calling a protected endpoint
+--------------------------------------------------------------
+
+  1. Get a token by logging in through the gateway. A default test
+     user is seeded automatically (see auth-service/src/main/
+     resources/data.sql):
+
+         email:    testuser@test.com
+         password: password123
+
+     Send a POST request to:
+         http://localhost:4004/auth/login
+
+     Body (JSON):
+         {
+           "email": "testuser@test.com",
+           "password": "password123"
+         }
+
+     You can do this with the Swagger UI, Postman, curl, or the
+     ready-made sample request file:
+         api-requests/auth-service/login.http
+     (If you're using VS Code or IntelliJ with an HTTP client
+     plugin, you can open and run these .http files directly.)
+
+     The response contains a "token" field — copy that JWT string.
+
+  2. Call the protected patient endpoint through the gateway:
+         GET http://localhost:4004/api/patients
+
+     Add a header:
+         Authorization: Bearer <paste the token here>
+
+     Sample ready-made requests are in:
+         api-requests/patient-service/get-patients.http
+         api-requests/patient-service/create-patient.http
+         api-requests/patient-service/update-patient.http
+         api-requests/patient-service/delete-patient.http
+
+  Note: calling patient-service directly on port 4000 (bypassing
+  the gateway) does NOT require a JWT — JWT validation is enforced
+  only at the gateway layer (api-gateway's "JwtValidation" filter).
+  Going through port 4004 is the intended, secured path.
+
+--------------------------------------------------------------------
+5. RUNNING A SINGLE SERVICE STANDALONE (WITHOUT DOCKER)
+--------------------------------------------------------------------
+
+If you just want to run ONE service on your machine directly
+(e.g. for debugging in your IDE), you can skip Docker for that
+service, but you still need its dependencies (Postgres/Kafka)
+reachable somehow — easiest is to still start those two via Docker
+and point the local service at "localhost" instead of container
+names.
+
+  Example: running patient-service standalone with an in-memory DB
+  (no Postgres/Kafka needed at all, good for quick API exploration):
+
+  1. Open:
+         patient-service/src/main/resources/application.properties
+
+  2. Uncomment lines 3-14 (the H2 in-memory database block).
+
+  3. Run:
+         cd patient-service
+         ./mvnw spring-boot:run          (Mac/Linux/Git Bash)
+         .\mvnw.cmd spring-boot:run      (Windows PowerShell)
+
+  4. Browse to:
+         http://localhost:4000/swagger-ui/index.html
+         http://localhost:4000/h2-console
+           JDBC URL: jdbc:h2:mem:testdb
+           User:     admin_viewer
+           Password: password
+
+  Note: with this approach, gRPC calls to billing-service and Kafka
+  events to analytics-service will fail silently/log errors unless
+  those services are also running and reachable — fine for just
+  testing patient CRUD via Swagger.
+
+--------------------------------------------------------------------
+6. RUNNING THE AWS-STYLE CLOUD DEPLOYMENT (OPTIONAL, ADVANCED)
+--------------------------------------------------------------------
+
+The "infrastructure" module defines the same system as real AWS
+infrastructure (VPC, ECS Fargate, RDS, MSK) using AWS CDK, and can
+be deployed to LocalStack (a local AWS emulator) instead of your
+laptop's Docker Compose stack. This is optional and only worth
+doing if you want to demonstrate/practice the infra-as-code side.
+
+Additional prerequisites for this path only:
+  - AWS CLI            (https://aws.amazon.com/cli/)
+  - LocalStack         (pip install localstack, or Docker image)
+  - AWS CDK CLI         (npm install -g aws-cdk-local aws-cdk)
+
+Steps:
+  1. Start LocalStack (in a separate terminal): localstack start
+  2. cd infrastructure
+  3. cdklocal bootstrap
+  4. cdklocal deploy
+  5. ./localstack-deploy.sh
+
+This path is more involved and not needed for day-to-day local
+development — use Section 3 (Docker Compose) for that.
+
+--------------------------------------------------------------------
+7. TROUBLESHOOTING
+--------------------------------------------------------------------
+
+  "Cannot connect to the Docker daemon"
+      -> Docker Desktop isn't running. Open it and wait for it to
+         fully start, then retry.
+
+  auth-service fails to start / "Could not resolve placeholder
+  'jwt.secret'"
+      -> Your .env file is missing or not in the same folder as
+         docker-compose.yml, or JWT_SECRET isn't set in it.
+
+  api-gateway fails to start / placeholder 'auth.service.url'
+      -> Same idea — AUTH_SERVICE_URL is set inside docker-
+         compose.yml already; if running api-gateway standalone
+         outside Docker, you must set this env var yourself, e.g.
+         AUTH_SERVICE_URL=http://localhost:4005
+
+  patient-service can't reach billing-service / Kafka
+      -> Make sure billing-service and kafka containers are up
+         (docker compose ps) before patient-service tries to use
+         those features. A few retries/log warnings on startup are
+         normal due to startup ordering.
+
+  Port already in use (4000/4001/4002/4004/4005/5000/5001/9092)
+      -> Something else on your machine is using that port. Stop
+         it, or change the left-hand side of the port mapping in
+         docker-compose.yml (e.g. "4010:4000") and use the new port
+         in your browser instead.
+
+====================================================================

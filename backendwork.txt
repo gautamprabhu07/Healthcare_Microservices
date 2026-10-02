@@ -1,0 +1,1474 @@
+=============================================================================
+ BACKEND WORK PLAN: Healthcare Microservices Platform
+=============================================================================
+
+ Goal: turn the current course-style backend into a complete, resume-worthy,
+ localhost-only backend that is ready for a frontend to be built on top of it.
+
+ How to use this file
+ --------------------
+ 1. Work through the steps IN ORDER. Later steps depend on earlier ones.
+ 2. For each step:
+      a. Read the step (what, why, tasks, acceptance criteria).
+      b. Do the "YOUR DELIVERABLES / BEFORE" items.
+      c. Paste the "PROMPT" into Claude Code (a fresh session is fine;
+         every prompt points back to this file for the full spec).
+      d. Verify using the "HOW TO VERIFY" checklist.
+      e. Do the "YOUR DELIVERABLES / AFTER" items (usually: test and commit).
+ 3. Docker Desktop must be running for every step.
+ 4. Commit after every step. If a step goes wrong you can roll back with git
+    instead of untangling it by hand.
+
+ Contents
+ --------
+   PART A  Audit: what exists, what works, what is broken or missing
+   PART B  Target architecture and conventions (the "contract")
+   PART C  Roadmap: steps 0 to 15, each with a prompt
+   PART D  Optional bonus steps
+   PART E  Final "backend complete" checklist
+
+
+=============================================================================
+ PART A: AUDIT OF THE CURRENT REPOSITORY
+=============================================================================
+
+A1. What exists today
+---------------------
+ Service            Port(s)        What it actually does
+ -----------------  -------------  -----------------------------------------
+ api-gateway        4004           Spring Cloud Gateway. Routes /auth/** to
+                                   auth-service and /api/patients/** to
+                                   patient-service. A custom JwtValidation
+                                   filter calls auth-service /validate on
+                                   every patient request.
+ auth-service       4005           Login (POST /login) returns a JWT.
+                                   GET /validate checks a token. One seeded
+                                   user (testuser@test.com / password123,
+                                   role ADMIN). Postgres.
+ patient-service    4000           Patient CRUD (list, create, update,
+                                   delete). On create, calls billing over
+                                   gRPC and publishes a PATIENT_CREATED
+                                   Kafka event. Postgres. Swagger UI.
+ billing-service    4001 / 9001    gRPC server with ONE method,
+                                   CreateBillingAccount. It is a STUB: it
+                                   logs the request and always returns
+                                   accountId "12345". No database.
+ analytics-service  (8080, bug)    Kafka consumer that LOGS patient events.
+                                   Nothing is stored or exposed.
+ infrastructure     -              AWS CDK stack (VPC, ECS, RDS, MSK) for
+                                   LocalStack. Not needed for localhost.
+ integration-tests  -              2 RestAssured test classes against the
+                                   gateway.
+ docker-compose.yml -              Runs everything locally (added by us).
+
+A2. What works well (keep it)
+-----------------------------
+ - Clean microservice split with a database per service.
+ - Three communication styles already shown: REST, gRPC and Kafka with
+   Protobuf. This is the project's strongest resume point.
+ - The gateway is the single entry point with centralised JWT validation.
+ - Validation groups on the patient DTO (create and update use different
+   rules).
+ - Every service has a multi-stage Dockerfile.
+ - Swagger/OpenAPI via springdoc in patient-service and auth-service.
+
+A3. Bugs found (things that are wrong right now)
+------------------------------------------------
+ B1  analytics-service has no server.port. It listens on 8080 while
+     docker-compose maps 4002, so port 4002 goes nowhere.
+ B2  api-gateway application-prod.yml has a malformed URI:
+     "http:/host.docker.internal:4005" (one slash is missing).
+ B3  AuthController.login has no @Valid, so the validation annotations on
+     LoginRequestDTO are ignored. An empty body reaches the service layer.
+ B4  PatientNotFoundException returns 400. It should return 404.
+     A duplicate email returns 400. It should return 409 (Conflict).
+ B5  DELETE /patients/{id} returns 204 even when the patient does not
+     exist. Nothing is checked.
+ B6  The EmailAlreadyExistsException message is missing a space:
+     "...already exists" + email gives "...already existsjohn@x.com".
+ B7  PatientIntegrationTest asserts body("patients", notNullValue()), but
+     the endpoint returns a JSON ARRAY with no "patients" field. The test
+     can never pass.
+ B8  The sample .http files point at an old LocalStack load-balancer host
+     (lb-7e648e08.elb.localhost.localstack.cloud). Two of them bypass the
+     gateway (localhost:4000) and send no token.
+ B9  Patient create is not transactional. If billing (gRPC) fails after
+     the patient row is saved, the client gets a 500 but the patient
+     still exists without a billing account. The gRPC call also has no
+     deadline, so a hung billing service hangs the request.
+ B10 patient-service accidentally starts its own gRPC SERVER on port 9090,
+     because grpc-spring-boot-starter brings both client and server. It
+     serves nothing useful today (Step 8 gives it a real purpose).
+ B11 Spring Security in auth-service auto-creates an in-memory user and
+     prints "Using generated security password..." on startup. This is
+     harmless noise that looks unprofessional.
+
+A4. Shortcomings and missing features
+-------------------------------------
+ Security and auth
+ - No way to create users (no register endpoint and no user management).
+ - Roles exist in the JWT ("ADMIN") but nothing enforces them. Any valid
+   token can do anything, including deleting patients.
+ - Downstream services do not know WHO is calling. The gateway does not
+   forward user identity.
+ - No CORS configuration. A browser frontend on another port is blocked.
+ - Every internal service port (4000, 4001, 4005 and others) is published
+   to the host, so anyone can skip the gateway and its JWT check entirely.
+ - The JWT secret is hardcoded in infrastructure/LocalStack.java, a
+   committed file.
+ - 401 responses from the gateway have an empty body.
+
+ Patient domain
+ - No GET /patients/{id}.
+ - No pagination, search or sorting on the list. This does not scale and
+   a frontend table needs it.
+ - registeredDate is stored but never returned.
+ - Minimal patient data: no phone or gender.
+ - Only PATIENT_CREATED is published. Update and delete emit no events,
+   so other services cannot react.
+
+ Billing domain
+ - Entirely fake (hardcoded account ID). No database, no invoices,
+   no REST API.
+
+ Analytics domain
+ - Only logs. No storage and no API, so a dashboard has no data source.
+
+ Healthcare features
+ - No appointments or doctors, which are the core of any clinic system.
+   This is the biggest functional gap for a "healthcare platform".
+
+ Engineering quality
+ - Schema is managed by ddl-auto=update plus data.sql. There are no
+   versioned migrations (Flyway).
+ - Error responses differ between services (a Map, an empty body, or the
+   Spring default page). A frontend needs ONE predictable error shape.
+ - No health checks (Spring Boot Actuator). docker-compose depends_on only
+   waits for a container to START, not to be READY.
+ - .proto files are copy-pasted into each service (billing_service.proto
+   x2, patient_event.proto x2). They can silently drift apart.
+ - No request or correlation IDs, so one request cannot be traced
+   across services in the logs.
+ - Tests: only empty contextLoads() tests and 3 integration tests (one of
+   them broken). No unit tests at all.
+ - docker-compose.yml is in .gitignore, so the way to run the project is
+   not version-controlled.
+ - No single API documentation entry point. Swagger is per service, and
+   billing and analytics have none.
+
+
+=============================================================================
+ PART B: TARGET ARCHITECTURE AND CONVENTIONS
+=============================================================================
+ Every step must follow these conventions. Prompts refer back to this part.
+
+B0. Original plan vs. target architecture
+-----------------------------------------
+ The original plan (course diagram):
+   Frontend -> API Gateway -> Auth, Patient, Analytics
+   Patient --gRPC--> Billing
+   Patient --Kafka "patient" topic--> Analytics, Notification
+ In the repo today, Notification Service does not exist at all, Billing is
+ a stub and Analytics only logs.
+
+ What changes in the target, and why:
+   + Appointment Service (new). The core healthcare workflow. It uses gRPC
+     (patient lookup) and REST (doctor lookup) for service-to-service
+     calls.
+   + Notification Service (from the original plan, now actually built).
+     Sends emails to a local Mailpit inbox you can open in the browser.
+   + Billing becomes a real service. It is still created over gRPC, but it
+     also consumes events and publishes its own.
+   + Three Kafka topics instead of one (patient, appointment, billing).
+     This gives a true event-driven system rather than a single
+     notification pipe.
+   + Analytics builds a read model from all topics and serves the
+     dashboard.
+   + The gateway becomes the ONLY entry point (service ports closed),
+     with CORS, identity headers and one Swagger UI.
+   + Every service with state gets its own Postgres (database-per-service).
+
+ Target architecture:
+
+                        +-----------------------+
+   Frontend (browser) ->|  API Gateway  :4004   |  CORS, JWT check, X-User-*
+   localhost:5173       |  + unified Swagger UI |  headers, X-Request-Id
+                        +-----------+-----------+
+          REST (internal Docker network only; nothing else published)
+     +-----------+-----------+------+-----+------------+---------------+
+     v           v           v            v            v               v
+  +------+  +---------+  +-----------+ +---------+ +-----------+ +--------------+
+  | Auth |  | Patient |  |Appointment| | Billing | | Analytics | | Notification |
+  |:4005 |  |  :4000  |  |   :4003   | |  :4001  | |   :4002   | |    :4006     |
+  +--+---+  +-+--+--+-+  +--+--+---+-+ +-+--+--+-+ +-----+-----+ +------+-------+
+     |        |  |  |       |  |   |     |  |  |         |              |
+     |        |  |  +-gRPC--)--)---)---->+  |  |         |              |
+     |        |  |  :9001   |  |   |  (create account)   |              |
+     |        |  +<--gRPC---+  |   |        |  |         |              |
+     |        |  :9002 (patient lookup)     |  |         |              |
+     +<-------)-------REST-----+   |        |  |         |              |
+     | (internal doctor lookup)    |        |  |         |              |
+     v        v                    v        v  |         v              v
+   [auth   [patient            [appointment [billing  [analytics   [notification
+    -db]    -db]                -db]         -db]      -db]         -db]
+              |                    |           |
+              | produces           | produces  | produces
+              v                    v           v
+   +-----------------------------------------------------------------------+
+   |  Kafka :9092   topics: patient | appointment | billing  (+ .DLT)      |
+   +-----------------------------------------------------------------------+
+        consumed by:  billing      <- patient, appointment
+                      appointment  <- patient
+                      analytics    <- patient, appointment, billing
+                      notification <- patient, appointment, billing
+                                          |
+                                          v SMTP
+                                  [Mailpit inbox UI :8025]
+
+B1. Services when finished
+--------------------------
+ Service              HTTP   gRPC   Database (host port)        Kafka
+ -------------------  -----  -----  --------------------------  ---------------
+ api-gateway          4004   -      -                           -
+ patient-service      4000   9002   patient-service-db (5000)   produces patient
+ billing-service      4001   9001   billing-service-db (5002)   consumes patient, appointment
+                                                                produces billing
+ analytics-service    4002   -      analytics-service-db (5004) consumes all topics
+ appointment-service  4003   -      appointment-service-db(5003) produces appointment
+                                                                consumes patient
+ auth-service         4005   -      auth-service-db (5001)      -
+ notification-service 4006   -      notification-service-db     consumes all topics
+                                    (5005)
+ kafka                9092
+ mailpit              SMTP 1025 (internal), inbox UI 8025 (published)
+
+ Only api-gateway (4004) is published to the host for application traffic.
+ The Mailpit UI (8025) is published so you can read the emails.
+ Database ports stay published so you can inspect the DBs with a client
+ (DBeaver or pgAdmin). Service ports are internal-only (Step 6).
+
+B2. Public API (everything goes through http://localhost:4004)
+-------------------------------------------------------------
+ Auth (public, no token)
+   POST   /auth/login                       -> { token, expiresAt, user }
+ Auth (token required)
+   GET    /api/auth/me                      -> current user profile
+   PUT    /api/auth/me/password             -> change own password
+ Users (ADMIN, except doctors list)
+   GET    /api/users?role=&page=&size=      -> list users
+   POST   /api/users                        -> create staff user
+   GET    /api/users/{id}
+   PUT    /api/users/{id}                   -> update name/role/specialization
+   PATCH  /api/users/{id}/status            -> enable or disable
+   GET    /api/users/doctors                -> list doctors (any role)
+ Patients
+   GET    /api/patients?page=&size=&search=&sort=
+   GET    /api/patients/{id}
+   POST   /api/patients
+   PUT    /api/patients/{id}
+   DELETE /api/patients/{id}
+ Appointments
+   GET    /api/appointments?patientId=&doctorId=&status=&from=&to=&page=&size=
+   GET    /api/appointments/{id}
+   POST   /api/appointments                 -> book
+   PUT    /api/appointments/{id}            -> reschedule or edit notes
+   PATCH  /api/appointments/{id}/status     -> COMPLETED / CANCELLED / NO_SHOW
+ Billing
+   GET    /api/billing/accounts/{patientId} -> account + balance summary
+   GET    /api/billing/invoices?patientId=&status=&page=&size=
+   GET    /api/billing/invoices/{id}
+   POST   /api/billing/invoices             -> manual invoice
+   POST   /api/billing/invoices/{id}/pay    -> mark as paid
+   POST   /api/billing/invoices/{id}/cancel
+ Analytics (ADMIN)
+   GET    /api/analytics/summary            -> KPI numbers for the dashboard
+   GET    /api/analytics/patients/registrations?months=6
+   GET    /api/analytics/appointments/by-status
+   GET    /api/analytics/revenue?months=6
+ Notifications (ADMIN)
+   GET    /api/notifications?recipient=&type=&status=&page=&size=
+                                            -> log of sent/failed emails
+   POST   /api/notifications/{id}/resend    -> retry a FAILED email
+ Docs
+   GET    /swagger-ui.html (on the gateway)  -> one UI covering every service
+
+B3. Roles and permissions
+-------------------------
+ Three roles: ADMIN, DOCTOR, RECEPTIONIST.
+
+ Action                              ADMIN   RECEPTIONIST   DOCTOR
+ ----------------------------------  -----   ------------   ------------------
+ Manage users                        yes     -              -
+ List doctors                        yes     yes            yes
+ View patients                       yes     yes            yes
+ Create / update patients            yes     yes            -
+ Delete patients                     yes     -              -
+ Book / reschedule / cancel appts    yes     yes            -
+ View appointments                   yes     yes            own only
+ Mark appointment COMPLETED/NO_SHOW  yes     -              own only
+ View notification log / resend      yes     -              -
+ View billing / invoices             yes     yes            -
+ Create / pay / cancel invoices      yes     yes            -
+ Analytics                           yes     -              -
+
+ How it is enforced:
+ - The gateway validates the JWT (through auth-service), REMOVES any
+   X-User-* headers sent by the client (anti-spoofing), then adds
+   X-User-Id, X-User-Email and X-User-Role from the token claims.
+ - Each downstream service reads those headers with a small shared
+   pattern (an interceptor or @RequiredRole annotation) and returns 403
+   when the role is not allowed.
+
+B4. Standard error response (every service, every error)
+--------------------------------------------------------
+ {
+   "timestamp": "2026-10-02T10:15:30Z",
+   "status": 404,
+   "error": "Not Found",
+   "message": "Patient not found with id 123...",
+   "path": "/patients/123...",
+   "fieldErrors": { "email": "Email should be valid" }   // only on 400
+ }
+ Status codes: 400 validation, 401 unauthenticated, 403 wrong role,
+ 404 not found, 409 conflict (duplicates or double-booking),
+ 422 invalid state change (for example paying a cancelled invoice),
+ 503 a downstream service is unavailable.
+
+B5. Kafka topics and events (Protobuf)
+--------------------------------------
+ Topic          Events                                         Key
+ -------------  ---------------------------------------------  -----------
+ patient        PATIENT_CREATED, PATIENT_UPDATED,              patientId
+                PATIENT_DELETED
+ appointment    APPOINTMENT_BOOKED, APPOINTMENT_RESCHEDULED,   appointmentId
+                APPOINTMENT_COMPLETED, APPOINTMENT_CANCELLED,
+                APPOINTMENT_NO_SHOW
+ billing        INVOICE_CREATED, INVOICE_PAID,                 invoiceId
+                INVOICE_CANCELLED
+ Every event carries: eventId (UUID), eventType, occurredAt (ISO-8601),
+ plus its payload fields.
+
+B6. Event-driven flows when finished
+------------------------------------
+ 1. Patient created -> (gRPC) billing account created synchronously
+                    -> (Kafka) analytics records a registration
+ 2. Appointment booked -> appointment-service checks that the patient
+    exists over gRPC (patient-service) and that the doctor exists over
+    REST (auth-service internal) -> (Kafka) analytics
+ 3. Appointment completed -> (Kafka) billing auto-creates a consultation
+    invoice -> (Kafka) INVOICE_CREATED -> analytics
+ 4. Invoice paid -> (Kafka) analytics revenue
+ 5. Patient deleted -> (Kafka) appointment-service cancels future
+    appointments; billing closes the account
+ 6. Notifications (Kafka, all topics) -> notification-service emails the
+    patient: welcome on PATIENT_CREATED, confirmation on
+    APPOINTMENT_BOOKED or RESCHEDULED, notice on APPOINTMENT_CANCELLED,
+    invoice on INVOICE_CREATED, receipt on INVOICE_PAID. Every email is
+    logged in its DB and visible in Mailpit at http://localhost:8025.
+
+B7. Code conventions
+--------------------
+ - Java 21 and Spring Boot 3.4.x (as today). Keep the package layout
+   com.pm.<service>.{controller,service,repository,model,dto,mapper,
+   exception,config,grpc,kafka}.
+ - DTOs: use Java records for new DTOs.
+ - Database schema: Flyway migrations in src/main/resources/db/migration
+   (V1__init.sql, V2__seed.sql and so on). ddl-auto=validate.
+ - Every new service gets: a Dockerfile (same pattern as the others), an
+   Actuator health endpoint, springdoc, the standard error handler, an
+   entry in docker-compose.yml and a route in the gateway.
+ - Configuration comes from environment variables with sensible defaults
+   in application.properties, so services still run outside Docker.
+
+
+=============================================================================
+ PART C: ROADMAP
+=============================================================================
+
+ Overview
+ --------
+  Step 0   Housekeeping and baseline commit
+  Step 1   Fix existing bugs (B1 to B11)
+  Step 2   Cross-cutting foundations: error format, Actuator, healthchecks
+  Step 3   Shared Protobuf contracts (remove copy-pasted .proto files)
+  Step 4   Flyway migrations and richer seed data
+  Step 5   Auth service: users, roles, /me, identity propagation
+  Step 6   Gateway hardening: CORS, identity headers, port lockdown,
+           correlation IDs
+  Step 7   Patient service: get-by-id, pagination/search, new fields,
+           events, resilience, role rules
+  Step 8   Billing service: real accounts and invoices (DB, REST, gRPC)
+  Step 9   Appointment service (new microservice)
+  Step 10  Wire the event-driven flows (appointment -> billing, deletes)
+  Step 11  Analytics service: persist events and expose dashboard APIs
+  Step 12  Notification service (from the original plan) with Mailpit
+  Step 13  Unified API docs at the gateway plus API_REFERENCE.md for the
+           frontend
+  Step 14  Testing: unit tests plus an end-to-end integration suite
+  Step 15  Final polish: README, projectrun.txt, demo script, tag release
+
+ Rough effort: steps 0 to 4 are small to medium. Steps 5, 7, 8, 9, 11 and
+ 12 are the big ones. Expect each of those to take one full Claude session
+ plus your testing.
+
+
+-----------------------------------------------------------------------------
+STEP 0: HOUSEKEEPING AND BASELINE COMMIT
+-----------------------------------------------------------------------------
+ What
+   - Commit the current working state (the Dockerfile fixes, README and
+     the new docker-compose.yml) so you have a clean restore point.
+   - Remove docker-compose.yml from .gitignore. It holds no secrets (the
+     secret lives in .env, which stays ignored) and it is how the project
+     runs, so it belongs in git.
+   - Add .env.example (committed) showing the required variables with
+     placeholder values, so a fresh clone knows what to create.
+   - Update the sample .http files to use http://localhost:4004 and to
+     always go through the gateway with the token.
+
+ Why
+   Version-controlled run instructions, and a safe rollback point before
+   bigger changes start.
+
+ YOUR DELIVERABLES / BEFORE
+   - Make sure .env exists with your JWT_SECRET (it does).
+
+ PROMPT
+ ---8<---
+ I'm working through backendwork.txt in this repo (Java 21 / Spring Boot
+ microservices run with docker compose). Please do STEP 0 (Housekeeping)
+ exactly as described there:
+ 1. Remove the /docker-compose.yml line from .gitignore (keep
+    /docker-compose.override.yml and .env ignored).
+ 2. Create .env.example with JWT_SECRET=<generate-with: openssl rand -base64 32>
+    and a short comment.
+ 3. Update every file in api-requests/ and grpc-requests/ to use
+    http://localhost:4004 (gateway paths: /auth/login, /api/patients...),
+    with the Authorization: Bearer {{token}} header on protected calls,
+    and the seeded credentials testuser@test.com / password123.
+ 4. Show me git status and propose a commit message for the baseline
+    commit, then create the commit after I confirm.
+ ---8<---
+
+ HOW TO VERIFY
+   - git status is clean after the commit.
+   - git ls-files shows docker-compose.yml and .env.example, and does NOT
+     show .env.
+
+ YOUR DELIVERABLES / AFTER
+   - Approve the commit.
+
+
+-----------------------------------------------------------------------------
+STEP 1: FIX EXISTING BUGS
+-----------------------------------------------------------------------------
+ What
+   Fix bugs B1 to B11 from Part A3:
+   - B1  analytics-service: add server.port=4002.
+   - B2  Fix the malformed URI in api-gateway application-prod.yml.
+   - B3  Add @Valid to AuthController.login, plus a validation error
+         handler in auth-service.
+   - B4  PatientNotFoundException returns 404. EmailAlreadyExists returns
+         409.
+   - B5  DELETE of a missing patient returns 404.
+   - B6  Fix the exception message spacing.
+   - B7  Fix PatientIntegrationTest (assert the response is a non-empty
+         array). Also make both integration tests use password123.
+   - B8  Already handled in Step 0. Just double-check.
+   - B9  Make createPatient @Transactional and give the gRPC call a
+         deadline (for example 3s). On gRPC failure, roll back and return
+         503 with a clear message. (Full resilience comes in Step 7.)
+   - B10 Leave the patient-service gRPC server in place for now, but set
+         grpc.server.port=9002 explicitly so it never collides (Step 9
+         uses it).
+   - B11 Exclude UserDetailsServiceAutoConfiguration in auth-service (or
+         define a proper bean) so the generated password is no longer
+         printed.
+
+ Why
+   Fix correctness before adding features. Otherwise every later step
+   inherits the bugs.
+
+ YOUR DELIVERABLES / BEFORE
+   - Docker Desktop running.
+
+ PROMPT
+ ---8<---
+ Continue backendwork.txt. Do STEP 1 (Fix existing bugs B1 to B11 from
+ Part A3). Read Part A3 and Step 1 in backendwork.txt for the exact list.
+ Keep changes minimal and focused on each bug. Do not start later steps.
+ After the changes, rebuild with `docker compose up --build -d`, then
+ verify: login works (testuser@test.com / password123), GET
+ /api/patients via gateway works, a missing patient returns 404, a
+ duplicate email returns 409, analytics-service logs show port 4002, and
+ auth-service no longer prints a generated password. Also run the
+ integration tests (`cd integration-tests && ../patient-service/mvnw test`
+ or the equivalent) and report results. Summarise each fix with file:line
+ references.
+ ---8<---
+
+ HOW TO VERIFY
+   - docker compose logs analytics-service shows "Tomcat started on port
+     4002".
+   - Creating a patient with an existing email returns 409.
+   - PUT or DELETE on a random UUID returns 404.
+   - Integration tests pass.
+
+ YOUR DELIVERABLES / AFTER
+   - Try the .http requests yourself. Commit: "fix: resolve audit bugs B1-B11".
+
+
+-----------------------------------------------------------------------------
+STEP 2: CROSS-CUTTING FOUNDATIONS
+-----------------------------------------------------------------------------
+ What
+   - Standard error response (Part B4) in every service:
+       * An ApiError record and a @RestControllerAdvice per service
+         (servlet services) covering validation, not-found, conflict,
+         ResponseStatusException and a catch-all 500 (log the stack trace,
+         return a generic message).
+       * api-gateway (reactive): 401 and 503 responses return the same JSON
+         shape (custom ErrorWebExceptionHandler or a filter that writes
+         the body).
+   - Spring Boot Actuator in every service. Expose only health and info.
+     Enable health groups for liveness and readiness.
+   - docker-compose healthchecks:
+       * Postgres: pg_isready.
+       * Kafka: kafka-topics.sh --list against localhost:9092.
+       * Services: curl or wget on /actuator/health. NOTE: the
+         eclipse-temurin image may not include curl. Use a tiny Java-free
+         approach (e.g. `wget -qO-` if available) or install curl in the
+         Dockerfile runner stage.
+       * depends_on with condition: service_healthy everywhere, so
+         services start in the right order with no crash-retry noise.
+   - Restart policy: restart: unless-stopped for app services.
+
+ Why
+   The frontend gets one predictable error format. The stack starts
+   reliably. Health endpoints are an easy production-readiness point for
+   interviews.
+
+ YOUR DELIVERABLES / BEFORE
+   - None.
+
+ PROMPT
+ ---8<---
+ Continue backendwork.txt. Do STEP 2 (Cross-cutting foundations): the
+ standard ApiError response from Part B4 in auth-service, patient-service,
+ billing-service, analytics-service and api-gateway (reactive variant for
+ the gateway, including JSON bodies for 401 and 503); Spring Boot
+ Actuator (health and info only) in all services; docker-compose
+ healthchecks for postgres, kafka and every service, with depends_on
+ condition: service_healthy and restart: unless-stopped. Check whether
+ the eclipse-temurin runner image has curl/wget and handle that in the
+ Dockerfiles if needed. Rebuild with `docker compose up --build -d`, wait
+ for everything to become healthy, show me `docker compose ps` (all
+ healthy), and demo one 400, one 401, one 404 and one 409 response body
+ through the gateway.
+ ---8<---
+
+ HOW TO VERIFY
+   - docker compose ps shows "(healthy)" for every container.
+   - Calling /api/patients with no token returns a JSON 401 body, not an
+     empty one.
+   - Posting an invalid patient returns 400 with fieldErrors.
+
+ YOUR DELIVERABLES / AFTER
+   - Commit: "feat: standard error format, actuator and compose healthchecks".
+
+
+-----------------------------------------------------------------------------
+STEP 3: SHARED PROTOBUF CONTRACTS
+-----------------------------------------------------------------------------
+ What
+   - Create a top-level folder: contracts/proto/
+       billing_service.proto      (gRPC, billing)
+       patient_service.proto      (gRPC, patient lookup, used in Step 9)
+       patient_event.proto        (Kafka)
+       appointment_event.proto    (Kafka, used in Steps 9 to 11)
+       billing_event.proto        (Kafka, used in Steps 8 and 11)
+     Add eventId, eventType and occurredAt to the event messages
+     (Part B5). Keep field numbers backward compatible with the existing
+     patient_event.proto.
+   - Point each service's protobuf-maven-plugin at ../contracts/proto
+     (<protoSourceRoot>) and delete the per-service copies.
+   - Because Docker build contexts are currently per-service folders (which
+     cannot see ../contracts), change docker-compose builds to
+     context: . with dockerfile: <service>/Dockerfile, and update each
+     Dockerfile to COPY contracts/ and <service>/ accordingly.
+   - It is fine to define the protos that later steps need now, so later
+     steps only implement them.
+
+ Why
+   One source of truth for service contracts. Copy-pasted protos are a
+   classic microservices bug, and fixing it is a good talking point.
+
+ YOUR DELIVERABLES / BEFORE
+   - None.
+
+ PROMPT
+ ---8<---
+ Continue backendwork.txt. Do STEP 3 (Shared Protobuf contracts). Create
+ contracts/proto/ with billing_service.proto, patient_service.proto,
+ patient_event.proto, appointment_event.proto and billing_event.proto as
+ described in Step 3 and Part B5 (add eventId, eventType and occurredAt
+ to events; keep existing field numbers compatible). Configure
+ protobuf-maven-plugin in every service that uses protos to read from
+ ../contracts/proto and delete the duplicated per-service .proto files.
+ Switch docker-compose builds to the repo-root context with per-service
+ dockerfile paths and fix the Dockerfiles. Make sure each service also
+ still builds locally with its own ./mvnw. Rebuild everything, create a
+ patient through the gateway, and confirm in logs that billing (gRPC)
+ and analytics (Kafka) still receive it.
+ ---8<---
+
+ HOW TO VERIFY
+   - No .proto files remain under */src/main/proto (other than via
+     contracts).
+   - Creating a patient still logs in billing-service and
+     analytics-service.
+
+ YOUR DELIVERABLES / AFTER
+   - Commit: "refactor: shared protobuf contracts module".
+
+
+-----------------------------------------------------------------------------
+STEP 4: FLYWAY MIGRATIONS AND SEED DATA
+-----------------------------------------------------------------------------
+ What
+   - Add Flyway to auth-service and patient-service. Remove data.sql and
+     switch to spring.jpa.hibernate.ddl-auto=validate and
+     spring.sql.init.mode=never (remove those env vars from compose).
+   - auth-service:   V1__create_users.sql and V2__seed_users.sql
+   - patient-service: V1__create_patients.sql and V2__seed_patients.sql
+     (keep the existing 15 demo patients and their UUIDs).
+   - Seed users (bcrypt hashes generated properly, all with password
+     password123):
+       admin@clinic.com        ADMIN
+       reception@clinic.com    RECEPTIONIST
+       dr.smith@clinic.com     DOCTOR (General Medicine)
+       dr.patel@clinic.com     DOCTOR (Cardiology)
+       dr.garcia@clinic.com    DOCTOR (Pediatrics)
+     Keep testuser@test.com (ADMIN) so old tests still work.
+     NOTE: the User table gets new columns in Step 5. It is fine to
+     create the final users schema here (first_name, last_name,
+     specialization, enabled, created_at) so Step 5 does not need another
+     migration.
+   - From here on, every service with a database uses Flyway.
+
+ Why
+   Versioned, repeatable schemas are what real teams use. ddl-auto=update
+   is a red flag in code reviews.
+
+ YOUR DELIVERABLES / BEFORE
+   - IMPORTANT: wipe the old database volumes, because Flyway will not
+     adopt the tables Hibernate created:
+         docker compose down -v
+
+ PROMPT
+ ---8<---
+ Continue backendwork.txt. Do STEP 4 (Flyway migrations and seed data)
+ for auth-service and patient-service exactly as specified there,
+ including the final users schema (first_name, last_name,
+ specialization, enabled, created_at) and the seed users with REAL bcrypt
+ hashes for password123 (generate them; do not invent hashes). Remove
+ data.sql and the SPRING_SQL_INIT_MODE / DDL_AUTO env vars from
+ docker-compose, and use ddl-auto=validate. Update the User entity to
+ match the new columns (Step 5 adds the logic). I have already run
+ `docker compose down -v`. Rebuild, confirm the Flyway migrations
+ applied in the logs, and verify login works for admin@clinic.com and
+ dr.smith@clinic.com and that GET /api/patients returns the 15 seeded
+ patients.
+ ---8<---
+
+ HOW TO VERIFY
+   - The logs show "Successfully applied 2 migrations" for both services.
+   - Every seeded user can log in with password123.
+
+ YOUR DELIVERABLES / AFTER
+   - Commit: "feat: flyway migrations and demo seed data".
+
+
+-----------------------------------------------------------------------------
+STEP 5: AUTH SERVICE COMPLETION
+-----------------------------------------------------------------------------
+ What
+   - Login response becomes { token, expiresAt, user: { id, email,
+     firstName, lastName, role, specialization } }. The JWT includes
+     claims userId, email, role and name.
+   - Reject login for disabled users. Return a generic 401 that does not
+     reveal whether the email exists.
+   - GET /validate stays (used by the gateway) but now RETURNS the claims
+     as JSON { userId, email, role }, so the gateway can forward identity.
+   - New endpoints (see Part B2):
+       GET  /auth/me, PUT /auth/me/password
+       Users CRUD under /users (ADMIN), GET /users/doctors (any role)
+     Paths inside auth-service: /users/** and /auth/me. The gateway maps
+     /api/users/** and /api/auth/** (wired in Step 6).
+   - Internal endpoint for other services: GET /internal/users/{id}
+     (doctor lookup by appointment-service). It must NOT be routed by the
+     gateway.
+   - Role enforcement in auth-service based on the X-User-Role header
+     (Step 6 makes the gateway send it). Build a small reusable pattern:
+     a @RequiredRole({...}) annotation plus a HandlerInterceptor, and a
+     CurrentUser helper that reads X-User-Id, X-User-Email and
+     X-User-Role. The same pattern is copied into patient, billing,
+     appointment and analytics later.
+   - Password rules: minimum 8 characters, bcrypt. A new user's email
+     must be unique (409).
+   - Token expiry: configurable (default 8h) through JWT_EXPIRATION_MS.
+
+ Why
+   Real auth: users, roles and identity. This unlocks role-based UI in
+   the frontend.
+
+ YOUR DELIVERABLES / BEFORE
+   - None.
+
+ PROMPT
+ ---8<---
+ Continue backendwork.txt. Do STEP 5 (Auth service completion) in
+ auth-service exactly as specified in Step 5 and Parts B2, B3 and B4:
+ richer login response and JWT claims, disabled-user handling,
+ /validate returning claims JSON, /auth/me, change password, ADMIN user
+ management under /users, GET /users/doctors, the internal
+ /internal/users/{id} endpoint, and the reusable @RequiredRole +
+ HandlerInterceptor + CurrentUser pattern reading X-User-* headers.
+ Use Java records for new DTOs and the standard ApiError handler. Do not
+ change the gateway yet (that's Step 6). Rebuild auth-service and test
+ it directly with curl on its container network or a temporary port
+ mapping, sending the X-User-* headers manually. Show me example
+ requests and responses for each endpoint.
+ ---8<---
+
+ HOW TO VERIFY
+   - Login returns the user object.
+   - /users with X-User-Role: DOCTOR returns 403. With ADMIN it returns
+     200.
+   - Creating a user with a duplicate email returns 409.
+   - A disabled user cannot log in.
+
+ YOUR DELIVERABLES / AFTER
+   - Commit: "feat(auth): users, roles, profile and identity claims".
+
+
+-----------------------------------------------------------------------------
+STEP 6: GATEWAY HARDENING
+-----------------------------------------------------------------------------
+ What
+   - CORS (global gateway config): allow origins http://localhost:5173
+     (Vite) and http://localhost:3000 (CRA/Next) from an env var
+     CORS_ALLOWED_ORIGINS. Allow methods GET, POST, PUT, PATCH, DELETE
+     and OPTIONS, headers Authorization and Content-Type, and credentials.
+     Preflight (OPTIONS) requests must NOT hit the JWT filter.
+   - JwtValidation filter upgrade:
+       * Strip any incoming X-User-Id, X-User-Email and X-User-Role
+         headers.
+       * Call auth-service /validate, read the claims JSON, and add the
+         X-User-* headers to the downstream request.
+       * Return a JSON 401 (standard format) for a missing or invalid
+         token, and a JSON 503 if auth-service is down.
+   - Routes (application.yml, and keep application-prod.yml consistent or
+     delete it if unused locally):
+       /auth/login           -> auth-service /login (public)
+       /api/auth/**          -> auth-service /auth/** (JWT)
+       /api/users/**         -> auth-service /users/** (JWT)
+       /api/patients/**      -> patient-service /patients/** (JWT)
+     (Billing, appointments and analytics routes are added in their own
+     steps.)
+   - Correlation ID: a global filter that reuses an incoming X-Request-Id
+     or generates one, forwards it downstream, and returns it in the
+     response. Each service logs it through MDC (a small servlet filter
+     in each service, or at minimum in patient and auth).
+   - docker-compose: REMOVE the host port mappings for app services
+     except api-gateway (4004). Keep the Postgres ports. Keep Kafka 9092.
+     Add a comment showing how to re-expose a service port temporarily
+     for debugging.
+   - Optional but recommended: gateway timeouts (connect and response)
+     so a hung service returns 504 instead of hanging.
+
+ Why
+   The frontend can call the API from the browser (CORS). The gateway
+   becomes the only door, so JWT checks cannot be bypassed. Downstream
+   services know who the caller is.
+
+ YOUR DELIVERABLES / BEFORE
+   - Decide your frontend dev port. The default assumption is Vite on
+     5173. If you plan Angular (4200), say so in the prompt.
+
+ PROMPT
+ ---8<---
+ Continue backendwork.txt. Do STEP 6 (Gateway hardening) exactly as
+ specified: global CORS from CORS_ALLOWED_ORIGINS (default
+ http://localhost:5173,http://localhost:3000) with preflight bypassing
+ JWT; upgrade JwtValidation to strip client X-User-* headers, call
+ auth-service /validate and forward X-User-Id/X-User-Email/X-User-Role,
+ and return standard-format JSON 401/503; the routes listed in Step 6;
+ a correlation-id (X-Request-Id) global filter plus MDC logging in the
+ services; gateway timeouts; and remove host port mappings for every app
+ service except api-gateway in docker-compose.yml. Wire @RequiredRole into
+ patient-service using the same pattern built in auth-service (Step 5),
+ applying the patient rules from Part B3. Rebuild everything and
+ demonstrate: an OPTIONS preflight from Origin http://localhost:5173
+ succeeds; a spoofed X-User-Role header is ignored; DOCTOR gets 403 on
+ POST /api/patients; RECEPTIONIST gets 403 on DELETE; ADMIN can do all
+ of it; and localhost:4000 is no longer reachable from the host.
+ ---8<---
+
+ HOW TO VERIFY
+   - curl -i -X OPTIONS http://localhost:4004/api/patients -H "Origin:
+     http://localhost:5173" -H "Access-Control-Request-Method: GET"
+     returns 200 with Access-Control-Allow-Origin.
+   - The X-Request-Id header is present in responses.
+   - http://localhost:4000 cannot be reached. The gateway still works.
+
+ YOUR DELIVERABLES / AFTER
+   - Update your mental model: from now on you test ONLY through
+     localhost:4004 (Swagger per service is consolidated in Step 13).
+   - Commit: "feat(gateway): cors, identity propagation, lockdown".
+
+
+-----------------------------------------------------------------------------
+STEP 7: PATIENT SERVICE ENHANCEMENTS
+-----------------------------------------------------------------------------
+ What
+   - GET /patients/{id}.
+   - GET /patients with pagination, search and sort:
+       ?page=0&size=10&search=john&sort=name,asc
+     search matches name OR email, case-insensitive. Response is a stable
+     page DTO: { content: [...], page, size, totalElements, totalPages }.
+     Do NOT return Spring's raw Page JSON (it is unstable). Use a custom
+     PageResponse<T> record.
+   - New fields: phoneNumber (optional, validated pattern) and gender
+     (MALE / FEMALE / OTHER). Add a Flyway V3 migration. Return
+     registeredDate and createdAt and updatedAt in the response. Default
+     registeredDate to today when it is not provided on create.
+   - Kafka: publish PATIENT_CREATED, PATIENT_UPDATED and PATIENT_DELETED
+     (patientId as the message key), using the shared proto (Step 3).
+     Use an async send with a logged success or failure callback. Declare
+     the topic with a NewTopic bean.
+   - Resilience on the billing gRPC call: Resilience4j retry (2 attempts)
+     plus a circuit breaker. The 3s deadline stays. On failure the
+     transaction rolls back and the API returns 503 "Billing service
+     unavailable, patient not created".
+   - patient-service gRPC SERVER: implement patient_service.proto
+     GetPatient(patientId) -> exists, name, email on port 9002. Step 9
+     uses it.
+   - Role rules from Part B3 (already wired in Step 6). Verify them.
+   - Remove the unneeded spring-boot-devtools from the runtime image (or
+     confirm that it is excluded in the packaged jar).
+
+ Why
+   Turns the core domain into something a real frontend table and detail
+   page can use, and completes the event stream.
+
+ YOUR DELIVERABLES / BEFORE
+   - None.
+
+ PROMPT
+ ---8<---
+ Continue backendwork.txt. Do STEP 7 (Patient service enhancements)
+ exactly as specified: GET by id; paginated/searchable/sortable list
+ returning a custom PageResponse<T> record; phoneNumber and gender
+ fields via Flyway V3 with registeredDate/createdAt/updatedAt in
+ responses; PATIENT_CREATED/UPDATED/DELETED Kafka events keyed by
+ patientId using the shared proto with async callbacks and a NewTopic
+ bean; Resilience4j retry + circuit breaker around the billing gRPC
+ call with transactional rollback and a 503 ApiError; and the
+ patient_service.proto GetPatient gRPC server on port 9002. Update
+ analytics-service's consumer just enough to log all three event types
+ (full analytics comes in Step 11). Rebuild, then demonstrate via the
+ gateway: paging and search, get by id, create with the new fields, an
+ update and a delete each producing a Kafka event (show the logs), and
+ that stopping billing-service (`docker compose stop billing-service`)
+ makes create return 503 without leaving a row in the DB.
+ ---8<---
+
+ HOW TO VERIFY
+   - GET /api/patients?page=0&size=5&search=smith returns a paged result.
+   - With billing stopped, create returns 503 and the patient count is
+     unchanged.
+
+ YOUR DELIVERABLES / AFTER
+   - Restart billing: docker compose start billing-service
+   - Commit: "feat(patient): paging, search, events, resilience, grpc lookup".
+
+
+-----------------------------------------------------------------------------
+STEP 8: BILLING SERVICE (REAL IMPLEMENTATION)
+-----------------------------------------------------------------------------
+ What
+   - Add Postgres (billing-service-db, host port 5002), JPA, Flyway,
+     validation, springdoc, Actuator, the ApiError handler and the
+     @RequiredRole pattern.
+   - Schema:
+       billing_account(id, patient_id UNIQUE, patient_name, patient_email,
+                       status ACTIVE|CLOSED, created_at)
+       invoice(id, invoice_number UNIQUE e.g. INV-2026-000123,
+               account_id FK, patient_id, appointment_id NULL,
+               description, amount NUMERIC(10,2), currency,
+               status PENDING|PAID|CANCELLED, issued_at, due_date,
+               paid_at NULL)
+   - gRPC CreateBillingAccount: really creates the account. Idempotent:
+     if an account already exists for that patient, return it. Returns
+     the real accountId.
+   - REST (see Part B2): account summary (totals for paid, pending and
+     overall balance), invoice list with filters and paging, get invoice,
+     create a manual invoice, pay, cancel. Valid state transitions only
+     (otherwise 422).
+   - Kafka:
+       produce INVOICE_CREATED, INVOICE_PAID, INVOICE_CANCELLED on topic
+       "billing"
+       consume "patient": on PATIENT_DELETED close the account and cancel
+       its PENDING invoices; on PATIENT_UPDATED refresh the cached
+       name and email.
+   - Seed: billing accounts for the 15 seeded patients plus a handful of
+     invoices in mixed states, so the dashboard has data.
+   - Gateway route: /api/billing/** -> billing-service /billing/**.
+   - Role rules from Part B3.
+
+ Why
+   Replaces the stub with a real bounded context. It shows gRPC, REST
+   and Kafka all in one service.
+
+ YOUR DELIVERABLES / BEFORE
+   - None. (A new DB container is added automatically.)
+
+ PROMPT
+ ---8<---
+ Continue backendwork.txt. Do STEP 8 (Billing service real
+ implementation) exactly as specified: billing-service-db in compose
+ (host port 5002, healthcheck), JPA + Flyway schema for billing_account
+ and invoice with seed data aligned to the 15 seeded patient UUIDs,
+ idempotent gRPC CreateBillingAccount returning the real account id,
+ the REST endpoints from Part B2 under /billing with paging and filters
+ and valid state transitions (422 on invalid), Kafka producer for the
+ billing topic and consumer for PATIENT_DELETED/PATIENT_UPDATED,
+ @RequiredRole rules from Part B3, standard ApiError, springdoc,
+ actuator, and the /api/billing/** gateway route. Rebuild and
+ demonstrate the full flow through the gateway: create a patient ->
+ account exists; create invoice -> pay it -> trying to cancel a paid
+ invoice returns 422; delete the patient -> account CLOSED and pending
+ invoices CANCELLED.
+ ---8<---
+
+ HOW TO VERIFY
+   - The accountId in patient-service logs is a real UUID, not "12345".
+   - GET /api/billing/accounts/{patientId} shows totals.
+
+ YOUR DELIVERABLES / AFTER
+   - Commit: "feat(billing): accounts, invoices, rest + grpc + kafka".
+
+
+-----------------------------------------------------------------------------
+STEP 9: APPOINTMENT SERVICE (NEW MICROSERVICE)
+-----------------------------------------------------------------------------
+ What
+   - New Spring Boot service appointment-service (port 4003), its own
+     Postgres (appointment-service-db, host port 5003), with the same
+     standards as the others (Dockerfile, Flyway, Actuator, springdoc,
+     ApiError, @RequiredRole, MDC).
+   - Schema: appointment(id, patient_id, patient_name, doctor_id,
+     doctor_name, start_time TIMESTAMPTZ, end_time, reason, notes,
+     status SCHEDULED|COMPLETED|CANCELLED|NO_SHOW, cancel_reason,
+     created_by, created_at, updated_at). Index on (doctor_id,
+     start_time).
+   - Booking rules:
+       * The patient must exist: gRPC call to patient-service GetPatient
+         (port 9002), with a deadline and a circuit breaker.
+       * The doctor must exist, be enabled and have role DOCTOR: REST
+         call to auth-service GET /internal/users/{id} on the internal
+         network.
+       * No double-booking: overlapping SCHEDULED appointments for the
+         same doctor return 409. The same rule applies to the patient.
+       * Must be in the future. Duration 15 to 120 min (default 30).
+       * Optional: clinic hours check (09:00 to 17:00, Mon to Fri),
+         configurable.
+   - Status transitions: SCHEDULED -> COMPLETED | CANCELLED | NO_SHOW.
+     Any other transition returns 422. A DOCTOR may only update their own
+     appointments (X-User-Id == doctor_id).
+   - List filters: patientId, doctorId, status, date range, plus paging.
+     A DOCTOR calling the list automatically sees only their own.
+   - Kafka: produce APPOINTMENT_* events (topic "appointment").
+     The consumer for PATIENT_DELETED comes in Step 10.
+   - Seed: a few dozen appointments across the 3 doctors, past ones
+     (COMPLETED / NO_SHOW) and upcoming ones (SCHEDULED).
+   - Gateway route: /api/appointments/** -> appointment-service
+     /appointments/**.
+   - Also add GET /appointments/availability?doctorId=&date= which
+     returns free 30-minute slots for that day. It is very useful for a
+     booking UI.
+
+ Why
+   Appointments are the core of any healthcare system. Building a full
+   new service from scratch is also strong resume evidence, and it uses
+   both gRPC and REST for service-to-service calls.
+
+ YOUR DELIVERABLES / BEFORE
+   - None.
+
+ PROMPT
+ ---8<---
+ Continue backendwork.txt. Do STEP 9 (Appointment service, new
+ microservice) exactly as specified: create appointment-service (port
+ 4003) with the same structure and standards as the other services
+ (multi-stage Dockerfile using the repo-root build context and shared
+ contracts from Step 3, Flyway, actuator, springdoc, ApiError,
+ @RequiredRole, MDC); its own postgres container (host port 5003) with
+ healthcheck; the appointment schema and seed data (using real seeded
+ patient and doctor UUIDs); booking validation via gRPC GetPatient on
+ patient-service:9002 and REST GET /internal/users/{id} on auth-service
+ (both with timeouts and circuit breakers); double-booking (409) and
+ future-time/duration rules; status transitions (422 when invalid) with
+ doctor-ownership checks; filtered and paginated listing (doctors only
+ see their own); the availability endpoint; APPOINTMENT_* Kafka events;
+ and the /api/appointments/** gateway route. Rebuild and demonstrate
+ through the gateway: book (receptionist), double-book (409), book for a
+ non-existent patient (404), list as doctor (only own), complete as the
+ owning doctor (200) and as another doctor (403), and availability for a
+ day.
+ ---8<---
+
+ HOW TO VERIFY
+   - docker compose ps shows appointment-service and its DB healthy.
+   - All the demo calls in the prompt behave as described.
+
+ YOUR DELIVERABLES / AFTER
+   - Commit: "feat(appointment): new appointment microservice".
+
+
+-----------------------------------------------------------------------------
+STEP 10: WIRE THE EVENT-DRIVEN FLOWS
+-----------------------------------------------------------------------------
+ What
+   - billing-service consumes "appointment":
+       APPOINTMENT_COMPLETED -> auto-create a consultation invoice
+       (amount from config CONSULTATION_FEE, default 50.00, description
+       "Consultation with Dr. X on <date>", appointment_id set).
+       Idempotent: never two invoices for the same appointment (unique
+       constraint on appointment_id, and handle redeliveries).
+   - appointment-service consumes "patient":
+       PATIENT_DELETED -> cancel that patient's future SCHEDULED
+       appointments (cancel_reason "Patient record deleted") and emit
+       APPOINTMENT_CANCELLED for each.
+       PATIENT_UPDATED -> refresh the cached patient_name.
+   - Consumer robustness (every consumer): a DefaultErrorHandler with
+     a fixed backoff (3 retries), then a dead-letter topic
+     (<topic>.DLT). Log the eventId with each message, and skip
+     duplicates (processed_event table keyed by eventId, or natural
+     idempotency).
+
+ Why
+   This is the "event-driven architecture" story told end to end, with
+   the failure handling (retries, DLT, idempotency) that interviewers
+   ask about.
+
+ YOUR DELIVERABLES / BEFORE
+   - None.
+
+ PROMPT
+ ---8<---
+ Continue backendwork.txt. Do STEP 10 (Wire the event-driven flows)
+ exactly as specified: billing consumes APPOINTMENT_COMPLETED and
+ auto-creates an idempotent consultation invoice (CONSULTATION_FEE
+ config, unique appointment_id); appointment-service consumes
+ PATIENT_DELETED (cancel future appointments and emit
+ APPOINTMENT_CANCELLED) and PATIENT_UPDATED (refresh cached name); and
+ every Kafka consumer in the system gets DefaultErrorHandler with
+ retries + dead-letter topic and eventId-based idempotency. Rebuild and
+ demonstrate: completing an appointment creates exactly one invoice even
+ if the event is replayed (show how you tested the replay), and deleting
+ a patient cancels their upcoming appointments and closes their billing
+ account.
+ ---8<---
+
+ HOW TO VERIFY
+   - Complete an appointment, then GET /api/billing/invoices?patientId=...
+     shows the new PENDING consultation invoice.
+
+ YOUR DELIVERABLES / AFTER
+   - Commit: "feat: event-driven appointment-billing flows with dlt".
+
+
+-----------------------------------------------------------------------------
+STEP 11: ANALYTICS SERVICE
+-----------------------------------------------------------------------------
+ What
+   - Add Postgres (analytics-service-db, host port 5004), JPA, Flyway,
+     Actuator, springdoc, ApiError and @RequiredRole (ADMIN only).
+   - Consume all three topics (patient, appointment, billing). Store:
+       * an event_log table (eventId UNIQUE, type, entity id, payload JSON
+         or columns, occurred_at), which also provides idempotency
+       * simple read-model tables if helpful (for example
+         daily_metrics(date, new_patients, appointments_booked,
+         appointments_completed, revenue_paid))
+   - REST (Part B2, under /analytics):
+       GET /analytics/summary -> totalPatients, newPatientsThisMonth,
+           appointmentsToday, upcomingAppointments, completionRate,
+           noShowRate, revenueThisMonth, outstandingAmount
+       GET /analytics/patients/registrations?months=6 -> [{month, count}]
+       GET /analytics/appointments/by-status -> [{status, count}]
+       GET /analytics/revenue?months=6 -> [{month, paid, pending}]
+     Shape the responses so they plug straight into chart libraries.
+   - Backfill: because seed data was inserted with SQL (no events), add a
+     startup backfill or analytics seed migration so the dashboard is NOT
+     empty on a fresh `docker compose up`. The simplest option is a
+     Flyway seed in analytics consistent with the other seeds. Document
+     the choice.
+   - Gateway route: /api/analytics/** -> analytics-service /analytics/**.
+
+ Why
+   Gives the frontend a dashboard and finishes the CQRS-style read model
+   story (write in services, aggregate by events).
+
+ YOUR DELIVERABLES / BEFORE
+   - None.
+
+ PROMPT
+ ---8<---
+ Continue backendwork.txt. Do STEP 11 (Analytics service) exactly as
+ specified: analytics-service-db (host port 5004, healthcheck), Flyway
+ schema with an idempotent event_log and helpful read-model tables,
+ consumers for the patient, appointment and billing topics (with the
+ retry/DLT setup from Step 10), the four ADMIN-only REST endpoints from
+ Part B2 with chart-friendly response shapes, a backfill/seed so a fresh
+ start shows non-empty numbers consistent with the other services' seed
+ data, and the /api/analytics/** gateway route. Rebuild with a fresh
+ `docker compose down -v && docker compose up --build -d`, then show the
+ output of every analytics endpoint, create a patient and complete an
+ appointment and pay an invoice, and show the numbers change.
+ ---8<---
+
+ HOW TO VERIFY
+   - The summary numbers move after you create, complete and pay.
+   - DOCTOR and RECEPTIONIST get 403 on /api/analytics/**.
+
+ YOUR DELIVERABLES / AFTER
+   - Commit: "feat(analytics): event store and dashboard apis".
+
+
+-----------------------------------------------------------------------------
+STEP 12: NOTIFICATION SERVICE (FROM THE ORIGINAL ARCHITECTURE)
+-----------------------------------------------------------------------------
+ What
+   - New Spring Boot service notification-service (port 4006) with its own
+     Postgres (notification-service-db, host port 5005), following the
+     same standards as the others (Dockerfile using the repo-root build
+     context and shared contracts, Flyway, Actuator, springdoc, ApiError,
+     @RequiredRole, MDC).
+   - Mailpit container (image axllent/mailpit) in docker-compose:
+     SMTP on 1025 (internal only) and the inbox web UI on 8025 (published).
+     Mailpit catches every email, so nothing is ever really sent. You read
+     them at http://localhost:8025.
+   - Spring Mail plus Thymeleaf HTML templates (simple, branded with the
+     clinic name "Healthcare Platform"):
+       PATIENT_CREATED         -> "Welcome to <clinic>" (to the patient)
+       APPOINTMENT_BOOKED      -> confirmation with doctor, date and time
+       APPOINTMENT_RESCHEDULED -> new date and time
+       APPOINTMENT_CANCELLED   -> cancellation notice with the reason
+       INVOICE_CREATED         -> invoice number, amount and due date
+       INVOICE_PAID            -> payment receipt
+     The events must carry what the email needs (patient email and name,
+     doctor name, times, amounts). If a field is missing from the Step 3
+     protos, add it there (keep field numbers backward compatible).
+   - Schema: notification(id, event_id UNIQUE, event_type, recipient,
+     subject, status SENT|FAILED, error_message, attempts, created_at,
+     sent_at). The unique event_id gives idempotency, so a replayed event
+     never sends a duplicate email.
+   - Consumers for the patient, appointment and billing topics (each in
+     its own consumer group "notification-service"), using the retry and
+     DLT setup from Step 10. A mail failure records status FAILED and does
+     not block the partition.
+   - REST (ADMIN only, Part B2):
+       GET  /notifications?recipient=&type=&status=&page=&size=
+       POST /notifications/{id}/resend   (only FAILED ones, otherwise 422)
+   - Gateway route: /api/notifications/** -> notification-service
+     /notifications/**.
+   - Seed: none needed. Emails appear as you use the system.
+
+ Why
+   It was in the original design but never built. It is also the most
+   visible proof that the event-driven architecture works: you click
+   "book appointment" and an email appears in an inbox.
+
+ YOUR DELIVERABLES / BEFORE
+   - None. Mailpit needs no account or configuration.
+
+ PROMPT
+ ---8<---
+ Continue backendwork.txt. Do STEP 12 (Notification service) exactly as
+ specified: create notification-service (port 4006) with the same
+ structure and standards as the other services (repo-root build context,
+ shared contracts, Flyway, actuator, springdoc, ApiError, @RequiredRole,
+ MDC); its own postgres (host port 5005, healthcheck); an
+ axllent/mailpit container (SMTP 1025 internal, UI 8025 published,
+ healthcheck); Kafka consumers for the patient, appointment and billing
+ topics with the Step 10 retry/DLT setup and event_id idempotency;
+ Thymeleaf HTML emails for the six event types listed in Step 12 (extend
+ the shared protos if events lack fields the emails need, keeping field
+ numbers compatible); the notification log table; the ADMIN-only
+ GET /notifications and POST /notifications/{id}/resend endpoints; and
+ the /api/notifications/** gateway route. Rebuild and demonstrate:
+ create a patient, book, reschedule and cancel an appointment, complete
+ one and pay its invoice, then show the emails in Mailpit
+ (http://localhost:8025 or its API at /api/v1/messages) and the matching
+ rows from GET /api/notifications. Also show that replaying an event
+ does not send a second email.
+ ---8<---
+
+ HOW TO VERIFY
+   - Open http://localhost:8025. Each action in the prompt produced
+     exactly one email.
+   - GET /api/notifications as ADMIN lists them. DOCTOR gets 403.
+
+ YOUR DELIVERABLES / AFTER
+   - Open Mailpit in your browser and check the emails look right.
+   - Commit: "feat(notification): email notifications via kafka + mailpit".
+
+
+-----------------------------------------------------------------------------
+STEP 13: UNIFIED API DOCS AND THE FRONTEND CONTRACT
+-----------------------------------------------------------------------------
+ What
+   - Gateway Swagger aggregation: add springdoc-openapi-starter-webflux-ui
+     to api-gateway, with routes /v3/api-docs/{service} to each service's
+     /v3/api-docs and springdoc.swagger-ui.urls listing auth, patients,
+     appointments, billing, analytics and notifications. Result: ONE Swagger UI at
+     http://localhost:4004/swagger-ui.html. Make the "Authorize" button
+     work with a Bearer JWT (security scheme on each service), and make
+     the servers URL in each spec point at the gateway so "Try it out"
+     goes through 4004.
+   - Annotate controllers properly (@Operation summaries, response codes
+     and example payloads) where they are missing.
+   - Create API_REFERENCE.md (repo root). This is the document the
+     frontend phase is built from:
+       * the base URL and the auth flow (login, store token, send Bearer,
+         handle 401)
+       * the role matrix (Part B3)
+       * every endpoint: method, path, roles, query params, request JSON
+         example, response JSON example, error codes
+       * the standard error format
+       * enums (roles, gender, appointment status, invoice status)
+       * the demo accounts
+   - Update the .http files (or add a Postman collection,
+     postman/healthcare-platform.postman_collection.json) covering every
+     endpoint with a login script that stores the token.
+
+ Why
+   The frontend (and a recruiter reading the repo) needs one clear,
+   accurate API contract.
+
+ YOUR DELIVERABLES / BEFORE
+   - Tell Claude if you prefer Postman, the .http files, or both.
+
+ PROMPT
+ ---8<---
+ Continue backendwork.txt. Do STEP 13 (Unified API docs and frontend
+ contract) exactly as specified: Swagger aggregation in api-gateway at
+ http://localhost:4004/swagger-ui.html covering every service, with a
+ working Bearer "Authorize" button and "Try it out" routed through the
+ gateway; fill in missing @Operation/@ApiResponse annotations; write
+ API_REFERENCE.md generated from the ACTUAL code (read every controller
+ and DTO; do not guess) following the outline in Step 13; and update the
+ api-requests .http files to cover every endpoint [and/or create a
+ Postman collection: <say which>]. Verify the Swagger UI loads all
+ specs and that one call per service works from it.
+ ---8<---
+
+ HOW TO VERIFY
+   - Open http://localhost:4004/swagger-ui.html. All services appear in
+     the dropdown. Authorize with a token, then "Try it out" works.
+
+ YOUR DELIVERABLES / AFTER
+   - Read API_REFERENCE.md yourself. It is your frontend spec.
+   - Commit: "docs: unified swagger and api reference".
+
+
+-----------------------------------------------------------------------------
+STEP 14: TESTING
+-----------------------------------------------------------------------------
+ What
+   - Unit tests (JUnit 5 + Mockito) for the service layer of auth,
+     patient, billing, appointment, analytics and notification. Focus on
+     the business rules: duplicate email, role checks, invoice state
+     transitions, double-booking, idempotent invoice creation, analytics
+     aggregation, and the event-to-email mapping and idempotency.
+   - Controller slice tests (@WebMvcTest) for validation and error format
+     in at least patient-service and appointment-service.
+   - Repository and Flyway tests with Testcontainers (Postgres) for at
+     least one service, which proves the migrations work.
+   - Replace the empty contextLoads tests, or make them work (they need a
+     DB; use Testcontainers or a test profile).
+   - Integration-tests module (RestAssured against the running stack via
+     the gateway) covering the main end-to-end journeys:
+       login per role -> 403 matrix spot checks
+       create patient -> billing account exists
+       book appointment -> complete -> invoice appears -> pay
+       -> analytics summary changes
+       delete patient -> appointments cancelled, account closed
+       book appointment -> confirmation email arrives (query the Mailpit
+       REST API at http://localhost:8025/api/v1/messages)
+     Use Awaitility for the async (Kafka) assertions.
+   - Add a test run script (run-tests.sh or a section in projectrun.txt):
+     unit tests per service, then integration tests against
+     docker compose.
+   - Optional: a GitHub Actions workflow that runs the unit tests on push
+     (it is free and looks good on the repo).
+
+ Why
+   Tests prove that the system works and are routinely checked by
+   reviewers of portfolio repos.
+
+ YOUR DELIVERABLES / BEFORE
+   - Stack running and healthy for the integration tests.
+
+ PROMPT
+ ---8<---
+ Continue backendwork.txt. Do STEP 14 (Testing) exactly as specified:
+ meaningful JUnit 5 + Mockito unit tests for the business rules in auth,
+ patient, billing, appointment, analytics and notification; @WebMvcTest
+ slice tests
+ for validation/error format in patient and appointment; at least one
+ Testcontainers Postgres test proving Flyway migrations; fix or replace
+ the contextLoads tests; and expand integration-tests into the
+ end-to-end journeys listed in Step 14 using RestAssured + Awaitility
+ against the gateway. Add a run-tests.sh script [and a GitHub Actions
+ workflow for unit tests: yes/no]. Run everything and show me the
+ results, fixing any real bugs the tests uncover (tell me about each one).
+ ---8<---
+
+ HOW TO VERIFY
+   - Every service's ./mvnw test passes.
+   - The integration-tests suite passes against a fresh stack.
+
+ YOUR DELIVERABLES / AFTER
+   - Commit: "test: unit, slice, testcontainers and e2e suites".
+
+
+-----------------------------------------------------------------------------
+STEP 15: FINAL POLISH AND RELEASE
+-----------------------------------------------------------------------------
+ What
+   - Rewrite README.md to reflect the FINAL backend: the architecture
+     diagram (gateway plus 6 services, gRPC, Kafka topics, DBs, Mailpit;
+     see Part B0), feature highlights,
+     the tech stack, the role matrix summary, a quick start (3 commands),
+     demo accounts, and links to API_REFERENCE.md and Swagger.
+   - Update projectrun.txt to match reality: ports, .env, healthchecks,
+     the single gateway entry point, the test commands and
+     troubleshooting.
+   - Clean-up: remove dead code, unused dependencies and leftover TODO
+     comments; make naming consistent; make sure no secrets are
+     committed (move the hardcoded JWT secret out of
+     infrastructure/LocalStack.java into an env var or context).
+   - infrastructure/ (CDK): since you deploy only on localhost, either
+       (a) keep it as an "infrastructure-as-code showcase" and update it
+           to include the new services and DBs, or
+       (b) leave it with a clear README note that it reflects the earlier
+           architecture.
+     Decide when you get here. (a) is more impressive but is extra work.
+   - A fresh-clone test: clone into a new folder, create .env, run
+     docker compose up --build, and walk the demo script.
+   - Tag the release: git tag v1.0-backend
+
+ YOUR DELIVERABLES / BEFORE
+   - Decide on option (a) or (b) for infrastructure/.
+
+ PROMPT
+ ---8<---
+ Continue backendwork.txt. Do STEP 15 (Final polish and release): rewrite
+ README.md for the final backend (architecture diagram, highlights, tech
+ stack, role summary, quick start, demo accounts, links to
+ API_REFERENCE.md and gateway Swagger), update projectrun.txt to match
+ the current setup exactly, do a dead-code/unused-dependency/secret
+ sweep (including moving the JWT secret out of
+ infrastructure/LocalStack.java), and for infrastructure/ take option
+ [(a) update the CDK stack for the new services | (b) add a README note].
+ Then do a fresh-clone verification in a temp folder (clone, create .env
+ from .env.example, docker compose up --build, run the integration
+ tests) and report the result. Do not tag or push; tell me the commands.
+ ---8<---
+
+ HOW TO VERIFY
+   - The fresh clone works with only the documented steps.
+
+ YOUR DELIVERABLES / AFTER
+   - Commit, then: git tag v1.0-backend
+   - The backend is complete. Next: the frontend phase, built from
+     API_REFERENCE.md.
+
+
+=============================================================================
+ PART D: OPTIONAL BONUS STEPS (do these after Step 15, or skip them)
+=============================================================================
+
+ D1. Rate limiting on login (brute-force protection)
+     Add a Redis container plus the gateway RequestRateLimiter on
+     /auth/login (for example 5 requests/min per IP), returning 429 in the
+     standard error format.
+     PROMPT: "Continue backendwork.txt. Do bonus step D1: add Redis to
+     docker-compose and a RequestRateLimiter on /auth/login in the
+     gateway (5 req/min per client IP, 429 with standard ApiError).
+     Demonstrate the 429."
+
+ D2. Refresh tokens
+     Short access tokens (15 min) plus a refresh token stored in the
+     auth DB (rotated on use, revocable, logout endpoint).
+     PROMPT: "Continue backendwork.txt. Do bonus step D2: refresh tokens
+     in auth-service (15-min access token, 7-day rotating refresh token
+     stored hashed in DB, POST /auth/refresh and POST /auth/logout, both
+     routed publicly via the gateway), update API_REFERENCE.md."
+
+ D3. Observability stack
+     Prometheus plus Grafana containers scraping /actuator/prometheus
+     from every service, with a provisioned dashboard (request rate,
+     latency, errors, JVM, Kafka consumer lag). Optionally add distributed
+     tracing with Micrometer Tracing and Zipkin, so one request can be
+     followed across gateway, appointment, patient (gRPC) and billing.
+     PROMPT: "Continue backendwork.txt. Do bonus step D3: add Micrometer
+     Prometheus registry to all services, Prometheus and Grafana to
+     docker-compose with a provisioned dashboard, and Micrometer Tracing
+     with Zipkin so a request can be traced across services including
+     gRPC and Kafka hops. Show me a trace for booking an appointment."
+
+ D4. Audit log
+     Record who did what (X-User-Id) for every create, update and delete
+     in patient, appointment and billing. Expose GET /api/audit for ADMIN.
+
+
+=============================================================================
+ PART E: "BACKEND COMPLETE" CHECKLIST
+=============================================================================
+ [ ] docker compose up --build on a fresh clone brings every container to
+     healthy with no manual steps beyond creating .env
+ [ ] Only port 4004 serves application traffic. All calls go through the
+     gateway.
+ [ ] Login works for all 5 demo accounts and returns the user profile
+ [ ] Role matrix enforced (spot-check 403s for DOCTOR and RECEPTIONIST)
+ [ ] Patients: paged search, get, create, update, delete, plus events
+ [ ] Appointments: book, availability, double-booking 409, complete,
+     cancel
+ [ ] Completing an appointment auto-creates an invoice. Paying it updates
+     the analytics revenue.
+ [ ] Deleting a patient cancels their appointments and closes the billing
+     account
+ [ ] Analytics endpoints return non-empty, chart-ready data on a fresh
+     start
+ [ ] Creating a patient, booking or cancelling an appointment, and issuing
+     or paying an invoice each send an email visible in Mailpit
+     (http://localhost:8025) and logged in /api/notifications
+ [ ] All errors use the standard JSON format
+ [ ] CORS allows your frontend dev origin
+ [ ] One Swagger UI at http://localhost:4004/swagger-ui.html, Authorize
+     works
+ [ ] API_REFERENCE.md is accurate and complete
+ [ ] Unit and integration tests pass
+ [ ] README.md and projectrun.txt reflect the final system
+ [ ] No secrets committed. .env.example is present.
+ [ ] Tagged v1.0-backend
+
+ After this, the only remaining work is the frontend: login screen,
+ role-aware layout, dashboard (analytics), patients (table, detail, form),
+ appointments (calendar, booking with availability), billing (invoices,
+ pay), users (admin), and the notification log (admin).
+=============================================================================
