@@ -5,7 +5,9 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
+import java.time.Instant;
 import java.util.UUID;
 
 @Entity
@@ -23,6 +25,63 @@ public class User {
 
   @Column(nullable = false)
   private String role;
+
+  @Column(nullable = false)
+  private String firstName;
+
+  @Column(nullable = false)
+  private String lastName;
+
+  private String specialization;
+
+  @Column(nullable = false)
+  private boolean enabled = true;
+
+  @Column(nullable = false, updatable = false)
+  private Instant createdAt;
+
+  @PrePersist
+  void onCreate() {
+    if (createdAt == null) {
+      createdAt = Instant.now();
+    }
+  }
+
+  public String getFirstName() {
+    return firstName;
+  }
+
+  public void setFirstName(String firstName) {
+    this.firstName = firstName;
+  }
+
+  public String getLastName() {
+    return lastName;
+  }
+
+  public void setLastName(String lastName) {
+    this.lastName = lastName;
+  }
+
+  public String getSpecialization() {
+    return specialization;
+  }
+
+  public void setSpecialization(String specialization) {
+    this.specialization = specialization;
+  }
+
+  public boolean isEnabled() {
+    return enabled;
+  }
+
+  public void setEnabled(boolean enabled) {
+    this.enabled = enabled;
+  }
+
+  public Instant getCreatedAt() {
+    return createdAt;
+  }
 
   public UUID getId() {
     return id;
