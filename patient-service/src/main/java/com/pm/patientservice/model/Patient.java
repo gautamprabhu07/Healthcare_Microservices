@@ -2,11 +2,16 @@ package com.pm.patientservice.model;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotNull;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.UUID;
 
@@ -32,6 +37,31 @@ public class Patient {
 
   @NotNull
   private LocalDate registeredDate;
+
+  @Column(length = 20)
+  private String phoneNumber;
+
+  @Enumerated(EnumType.STRING)
+  @Column(length = 10)
+  private Gender gender;
+
+  @Column(nullable = false, updatable = false)
+  private Instant createdAt;
+
+  @Column(nullable = false)
+  private Instant updatedAt;
+
+  @PrePersist
+  void onCreate() {
+    Instant now = Instant.now();
+    createdAt = now;
+    updatedAt = now;
+  }
+
+  @PreUpdate
+  void onUpdate() {
+    updatedAt = Instant.now();
+  }
 
   public UUID getId() {
     return id;
@@ -81,4 +111,27 @@ public class Patient {
     this.registeredDate = registeredDate;
   }
 
+  public String getPhoneNumber() {
+    return phoneNumber;
+  }
+
+  public void setPhoneNumber(String phoneNumber) {
+    this.phoneNumber = phoneNumber;
+  }
+
+  public Gender getGender() {
+    return gender;
+  }
+
+  public void setGender(Gender gender) {
+    this.gender = gender;
+  }
+
+  public Instant getCreatedAt() {
+    return createdAt;
+  }
+
+  public Instant getUpdatedAt() {
+    return updatedAt;
+  }
 }

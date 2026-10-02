@@ -1,72 +1,41 @@
 package com.pm.patientservice.dto;
 
-import com.pm.patientservice.dto.validators.CreatePatientValidationGroup;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
-public class PatientRequestDTO {
+/**
+ * Create/update payload. phoneNumber, gender and registeredDate are optional
+ * (send null or omit them). registeredDate defaults to today on create and is
+ * ignored on update.
+ */
+public record PatientRequestDTO(
+    @NotBlank(message = "Name is required")
+    @Size(max = 100, message = "Name cannot exceed 100 characters")
+    String name,
 
-  @NotBlank(message = "Name is required")
-  @Size(max = 100, message = "Name cannot exceed 100 characters")
-  private String name;
+    @NotBlank(message = "Email is required")
+    @Email(message = "Email should be valid")
+    String email,
 
-  @NotBlank(message = "Email is required")
-  @Email(message = "Email should be valid")
-  private String email;
+    @NotBlank(message = "Address is required")
+    String address,
 
-  @NotBlank(message = "Address is required")
-  private String address;
+    @NotBlank(message = "Date of birth is required")
+    @Pattern(regexp = "\\d{4}-\\d{2}-\\d{2}",
+        message = "Date of birth must use the format YYYY-MM-DD")
+    String dateOfBirth,
 
-  @NotBlank(message = "Date of birth is required")
-  private String dateOfBirth;
+    @Pattern(regexp = "\\+?[0-9][0-9 ()\\-]{6,19}",
+        message = "Phone number is not valid")
+    String phoneNumber,
 
-  @NotBlank(groups = CreatePatientValidationGroup.class, message =
-      "Registered date is required")
-  private String registeredDate;
+    @Pattern(regexp = "MALE|FEMALE|OTHER",
+        message = "Gender must be MALE, FEMALE or OTHER")
+    String gender,
 
-  public @NotBlank(message = "Name is required") @Size(max = 100, message = "Name cannot exceed 100 characters") String getName() {
-    return name;
-  }
-
-  public void setName(
-      @NotBlank(message = "Name is required") @Size(max = 100, message = "Name cannot exceed 100 characters") String name) {
-    this.name = name;
-  }
-
-  public @NotBlank(message = "Email is required") @Email(message = "Email should be valid") String getEmail() {
-    return email;
-  }
-
-  public void setEmail(
-      @NotBlank(message = "Email is required") @Email(message = "Email should be valid") String email) {
-    this.email = email;
-  }
-
-  public @NotBlank(message = "Address is required") String getAddress() {
-    return address;
-  }
-
-  public void setAddress(
-      @NotBlank(message = "Address is required") String address) {
-    this.address = address;
-  }
-
-  public @NotBlank(message = "Date of birth is required") String getDateOfBirth() {
-    return dateOfBirth;
-  }
-
-  public void setDateOfBirth(
-      @NotBlank(message = "Date of birth is required") String dateOfBirth) {
-    this.dateOfBirth = dateOfBirth;
-  }
-
-  public String getRegisteredDate() {
-    return registeredDate;
-  }
-
-  public void setRegisteredDate(String registeredDate) {
-    this.registeredDate = registeredDate;
-  }
-
+    @Pattern(regexp = "\\d{4}-\\d{2}-\\d{2}",
+        message = "Registered date must use the format YYYY-MM-DD")
+    String registeredDate) {
 }

@@ -37,6 +37,6 @@ public class PatientIntegrationTest {
         .get("/api/patients")
         .then()
         .statusCode(200)
-        .body("size()", greaterThan(0));
+        .body("content.size()", greaterThan(0));
   }
 }

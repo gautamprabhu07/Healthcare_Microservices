@@ -1,7 +1,9 @@
 package com.pm.patientservice.exception;
 
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.grpc.StatusRuntimeException;
 import jakarta.servlet.http.HttpServletRequest;
+import java.time.format.DateTimeParseException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.slf4j.Logger;
@@ -9,6 +11,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
+import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -43,10 +46,15 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
       Object body, HttpHeaders headers, HttpStatusCode statusCode,
       WebRequest request) {
 
-    String message = ex instanceof ErrorResponse errorResponse
-        && errorResponse.getBody().getDetail() != null
-        ? errorResponse.getBody().getDetail()
-        : HttpStatus.valueOf(statusCode.value()).getReasonPhrase();
+    String message;
+    if (body instanceof ProblemDetail problem && problem.getDetail() != null) {
+      message = problem.getDetail();
+    } else if (ex instanceof ErrorResponse errorResponse
+        && errorResponse.getBody().getDetail() != null) {
+      message = errorResponse.getBody().getDetail();
+    } else {
+      message = HttpStatus.valueOf(statusCode.value()).getReasonPhrase();
+    }
 
     return build(statusCode, message, request, null);
   }
@@ -77,10 +85,33 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     return build(HttpStatus.FORBIDDEN, ex.getMessage(), request, null);
   }
 
+  @ExceptionHandler(InvalidRequestException.class)
+  public ResponseEntity<Object> handleInvalidRequest(InvalidRequestException ex,
+      WebRequest request) {
+    return build(HttpStatus.BAD_REQUEST, "Validation failed", request,
+        ex.getFieldErrors());
+  }
+
+  @ExceptionHandler(DateTimeParseException.class)
+  public ResponseEntity<Object> handleDateParse(DateTimeParseException ex,
+      WebRequest request) {
+    return build(HttpStatus.BAD_REQUEST,
+        "Invalid date. Use a real calendar date in the format YYYY-MM-DD",
+        request, null);
+  }
+
   @ExceptionHandler(StatusRuntimeException.class)
   public ResponseEntity<Object> handleGrpcException(StatusRuntimeException ex,
       WebRequest request) {
     log.error("Billing service call failed: {}", ex.getStatus());
+    return build(HttpStatus.SERVICE_UNAVAILABLE,
+        "Billing service unavailable, patient not created", request, null);
+  }
+
+  @ExceptionHandler(CallNotPermittedException.class)
+  public ResponseEntity<Object> handleCircuitOpen(CallNotPermittedException ex,
+      WebRequest request) {
+    log.error("Billing circuit breaker is open: {}", ex.getMessage());
     return build(HttpStatus.SERVICE_UNAVAILABLE,
         "Billing service unavailable, patient not created", request, null);
   }
