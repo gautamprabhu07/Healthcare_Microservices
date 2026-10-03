@@ -5,6 +5,8 @@ import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import java.util.UUID;
 import net.devh.boot.grpc.server.service.GrpcService;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import patient.grpc.GetPatientRequest;
@@ -25,6 +27,32 @@ public class PatientGrpcService extends PatientServiceGrpc.PatientServiceImplBas
 
   public PatientGrpcService(PatientRepository patientRepository) {
     this.patientRepository = patientRepository;
+  }
+
+  /**
+   * Runs the real lookup once after startup so the first caller does not pay for
+   * cold Hibernate/protobuf classes (which exceeds the callers' short deadlines).
+   */
+  @EventListener(ApplicationReadyEvent.class)
+  void warmUp() {
+    try {
+      getPatient(GetPatientRequest.newBuilder()
+          .setPatientId(new UUID(0L, 0L).toString()).build(), new StreamObserver<>() {
+            @Override
+            public void onNext(GetPatientResponse value) {
+            }
+
+            @Override
+            public void onError(Throwable t) {
+            }
+
+            @Override
+            public void onCompleted() {
+            }
+          });
+    } catch (RuntimeException e) {
+      log.warn("GetPatient warm-up failed: {}", e.toString());
+    }
   }
 
   @Override

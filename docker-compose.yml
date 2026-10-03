@@ -63,6 +63,24 @@ services:
       timeout: 5s
       retries: 10
 
+  appointment-service-db:
+    image: postgres:17
+    container_name: appointment-service-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: admin_user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: db
+    ports:
+      - "5003:5432"
+    volumes:
+      - appointment_service_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin_user -d db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   # ---------- Kafka (single-node, KRaft mode, no Zookeeper needed) ----------
   kafka:
     image: apache/kafka:3.7.0
@@ -177,6 +195,37 @@ services:
       retries: 12
       start_period: 40s
 
+  appointment-service:
+    build:
+      context: .
+      dockerfile: appointment-service/Dockerfile
+    container_name: appointment-service
+    restart: unless-stopped
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://appointment-service-db:5432/db
+      SPRING_DATASOURCE_USERNAME: admin_user
+      SPRING_DATASOURCE_PASSWORD: password
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      PATIENT_SERVICE_ADDRESS: patient-service
+      PATIENT_SERVICE_GRPC_PORT: 9002
+      AUTH_SERVICE_URL: http://auth-service:4005
+      CLINIC_TIMEZONE: ${CLINIC_TIMEZONE:-UTC}
+    depends_on:
+      appointment-service-db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      patient-service:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:4003/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
   api-gateway:
     build:
       context: .
@@ -195,6 +244,8 @@ services:
         condition: service_healthy
       billing-service:
         condition: service_healthy
+      appointment-service:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -fs http://localhost:4004/actuator/health || exit 1"]
       interval: 10s
@@ -206,3 +257,4 @@ volumes:
   auth_service_db_data:
   patient_service_db_data:
   billing_service_db_data:
+  appointment_service_db_data:

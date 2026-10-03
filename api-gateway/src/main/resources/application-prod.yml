@@ -6,3 +6,6 @@ patient:
 billing:
   service:
     url: http://host.docker.internal:4001
+appointment:
+  service:
+    url: http://host.docker.internal:4003

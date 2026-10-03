@@ -7,6 +7,8 @@ import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import io.github.resilience4j.retry.annotation.Retry;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,6 +20,7 @@ public class BillingServiceGrpcClient {
 
   private static final Logger log = LoggerFactory.getLogger(
       BillingServiceGrpcClient.class);
+  private final ManagedChannel channel;
   private final BillingServiceGrpc.BillingServiceBlockingStub blockingStub;
   private final long deadlineSeconds;
 
@@ -30,7 +33,7 @@ public class BillingServiceGrpcClient {
     log.info("Connecting to Billing Service GRPC service at {}:{}",
         serverAddress, serverPort);
 
-    ManagedChannel channel = ManagedChannelBuilder.forAddress(serverAddress,
+    this.channel = ManagedChannelBuilder.forAddress(serverAddress,
         serverPort).usePlaintext().build();
 
     // Connect eagerly so the first request doesn't pay the connection cost
@@ -53,9 +56,18 @@ public class BillingServiceGrpcClient {
     BillingRequest request = BillingRequest.newBuilder().setPatientId(patientId)
         .setName(name).setEmail(email).build();
 
-    BillingResponse response = blockingStub
-        .withDeadlineAfter(deadlineSeconds, TimeUnit.SECONDS)
-        .createBillingAccount(request);
+    BillingResponse response;
+    try {
+      response = blockingStub
+          .withDeadlineAfter(deadlineSeconds, TimeUnit.SECONDS)
+          .createBillingAccount(request);
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.UNAVAILABLE) {
+        // The peer restarted: reconnect now instead of waiting out gRPC's backoff.
+        channel.resetConnectBackoff();
+      }
+      throw e;
+    }
     log.info("Received response from billing service via GRPC: {}", response);
     return response;
   }

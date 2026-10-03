@@ -13,6 +13,8 @@ import java.math.BigDecimal;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -32,6 +34,19 @@ public class BillingAccountService {
     this.accountRepository = accountRepository;
     this.invoiceRepository = invoiceRepository;
     this.invoiceService = invoiceService;
+  }
+
+  /**
+   * Touches the database path once after startup so the first gRPC caller does
+   * not pay for cold Hibernate classes (which exceeds the caller's deadline).
+   */
+  @EventListener(ApplicationReadyEvent.class)
+  void warmUp() {
+    try {
+      accountRepository.findByPatientId(new UUID(0L, 0L));
+    } catch (RuntimeException e) {
+      log.warn("Billing warm-up failed: {}", e.toString());
+    }
   }
 
   /**

@@ -68,6 +68,15 @@ spring:
             - StripPrefix=1
             - JwtValidation
 
+        # /api/appointments/** -> appointment-service /appointments/**
+        - id: appointment-service-route
+          uri: ${appointment.service.url:http://appointment-service:4003}
+          predicates:
+            - Path=/api/appointments/**
+          filters:
+            - StripPrefix=1
+            - JwtValidation
+
         # OpenAPI docs per service (consolidated in a later step)
         - id: api-docs-patient-route
           uri: ${patient.service.url:http://patient-service:4000}
