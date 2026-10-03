@@ -14,6 +14,7 @@ import com.pm.billingservice.model.Invoice;
 import com.pm.billingservice.model.InvoiceStatus;
 import com.pm.billingservice.repository.BillingAccountRepository;
 import com.pm.billingservice.repository.InvoiceRepository;
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -38,15 +39,18 @@ public class InvoiceService {
   private final BillingAccountRepository accountRepository;
   private final BillingEventProducer eventProducer;
   private final String defaultCurrency;
+  private final BigDecimal consultationFee;
 
   public InvoiceService(InvoiceRepository invoiceRepository,
       BillingAccountRepository accountRepository,
       BillingEventProducer eventProducer,
-      @Value("${billing.default-currency:USD}") String defaultCurrency) {
+      @Value("${billing.default-currency:USD}") String defaultCurrency,
+      @Value("${billing.consultation-fee:50.00}") BigDecimal consultationFee) {
     this.invoiceRepository = invoiceRepository;
     this.accountRepository = accountRepository;
     this.eventProducer = eventProducer;
     this.defaultCurrency = defaultCurrency;
+    this.consultationFee = consultationFee;
   }
 
   @Transactional(readOnly = true)
@@ -108,6 +112,28 @@ public class InvoiceService {
     Invoice saved = invoiceRepository.save(invoice);
     eventProducer.publishAfterCommit(saved, BillingEventProducer.INVOICE_CREATED);
     return BillingMapper.toResponse(saved);
+  }
+
+  /** Consultation invoice for a completed appointment (amount from billing.consultation-fee). */
+  @Transactional
+  public Invoice createForAppointment(BillingAccount account, UUID appointmentId,
+      String description) {
+    Instant now = Instant.now();
+    Invoice invoice = new Invoice();
+    invoice.setAccount(account);
+    invoice.setPatientId(account.getPatientId());
+    invoice.setAppointmentId(appointmentId);
+    invoice.setInvoiceNumber(nextInvoiceNumber(now));
+    invoice.setDescription(description);
+    invoice.setAmount(consultationFee);
+    invoice.setCurrency(defaultCurrency);
+    invoice.setStatus(InvoiceStatus.PENDING);
+    invoice.setIssuedAt(now);
+    invoice.setDueDate(LocalDate.now(ZoneOffset.UTC).plusDays(DEFAULT_DUE_DAYS));
+
+    Invoice saved = invoiceRepository.saveAndFlush(invoice);
+    eventProducer.publishAfterCommit(saved, BillingEventProducer.INVOICE_CREATED);
+    return saved;
   }
 
   @Transactional

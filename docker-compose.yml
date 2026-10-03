@@ -138,6 +138,7 @@ services:
       SPRING_DATASOURCE_USERNAME: admin_user
       SPRING_DATASOURCE_PASSWORD: password
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      BILLING_CONSULTATION_FEE: ${CONSULTATION_FEE:-50.00}
     depends_on:
       billing-service-db:
         condition: service_healthy

@@ -13,21 +13,21 @@ public class KafkaConsumer {
   private static final Logger log = LoggerFactory.getLogger(
       KafkaConsumer.class);
 
+  /**
+   * Logging is naturally idempotent, so redelivery is harmless for now (Step 11
+   * adds an event log keyed by eventId). Unreadable messages are thrown so the
+   * error handler can dead-letter them instead of losing them silently.
+   */
   @KafkaListener(topics="patient", groupId = "analytics-service")
-  public void consumeEvent(byte[] event) {
-    try {
-      PatientEvent patientEvent = PatientEvent.parseFrom(event);
-      // ... perform any business related to analytics here
+  public void consumeEvent(byte[] event) throws InvalidProtocolBufferException {
+    PatientEvent patientEvent = PatientEvent.parseFrom(event);
 
-      log.info("Received Patient Event: [EventId={},Type={},OccurredAt={},PatientId={},PatientName={},PatientEmail={}]",
-            patientEvent.getEventId(),
-            patientEvent.getEventType(),
-            patientEvent.getOccurredAt(),
-            patientEvent.getPatientId(),
-            patientEvent.getName(),
-            patientEvent.getEmail());
-    } catch (InvalidProtocolBufferException e) {
-      log.error("Error deserializing event {}", e.getMessage());
-    }
+    log.info("Received Patient Event: [EventId={},Type={},OccurredAt={},PatientId={},PatientName={},PatientEmail={}]",
+        patientEvent.getEventId(),
+        patientEvent.getEventType(),
+        patientEvent.getOccurredAt(),
+        patientEvent.getPatientId(),
+        patientEvent.getName(),
+        patientEvent.getEmail());
   }
 }

@@ -1,7 +1,7 @@
-package com.pm.billingservice.kafka;
+package com.pm.appointmentservice.kafka;
 
 import com.google.protobuf.InvalidProtocolBufferException;
-import com.pm.billingservice.service.PatientEventHandler;
+import com.pm.appointmentservice.service.PatientEventHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -24,7 +24,7 @@ public class PatientEventConsumer {
     this.handler = handler;
   }
 
-  @KafkaListener(topics = "patient", groupId = "billing-service")
+  @KafkaListener(topics = "patient", groupId = "appointment-service")
   public void consume(byte[] payload) throws InvalidProtocolBufferException {
     PatientEvent event = PatientEvent.parseFrom(payload);
     log.info("Received {} (eventId={}, patientId={})", event.getEventType(),

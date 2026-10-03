@@ -27,6 +27,8 @@ public interface InvoiceRepository
   @EntityGraph(attributePaths = "account")
   List<Invoice> findByAccountIdAndStatus(UUID accountId, InvoiceStatus status);
 
+  boolean existsByAppointmentId(UUID appointmentId);
+
   /** Rows of [status, sum(amount), count] for one account. */
   @Query("select i.status, sum(i.amount), count(i) from Invoice i "
       + "where i.account.id = :accountId group by i.status")

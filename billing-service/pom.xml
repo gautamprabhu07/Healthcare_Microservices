@@ -144,6 +144,7 @@
           <includes>
             <include>billing_service.proto</include>
             <include>billing_event.proto</include>
+            <include>appointment_event.proto</include>
             <include>patient_event.proto</include>
           </includes>
           <protocArtifact>com.google.protobuf:protoc:3.25.5:exe:${os.detected.classifier}</protocArtifact>
